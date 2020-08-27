@@ -32,6 +32,30 @@ import static org.apache.flink.configuration.description.TextElement.text;
  */
 public class SecurityOptions {
 
+
+	// ------------------------------------------------------------------------
+	//  TBDS Options  TODO pengming
+	// ------------------------------------------------------------------------
+
+	@Documentation.Section(Documentation.Sections.SECURITY_AUTH_TBDS)
+	public static final ConfigOption<String> TBDS_LOGIN_SECUREID =
+		key("hadoop_security_authentication_tbds_secureid")
+			.noDefaultValue()
+			.withDescription("TBDS Secureid.");
+
+	@Documentation.Section(Documentation.Sections.SECURITY_AUTH_TBDS)
+	public static final ConfigOption<String> TBDS_LOGIN_USERNAME =
+		key("hadoop_security_authentication_tbds_username")
+			.noDefaultValue()
+			.withDescription("TBDS Username.");
+
+	@Documentation.Section(Documentation.Sections.SECURITY_AUTH_TBDS)
+	public static final ConfigOption<String> TBDS_LOGIN_SECUREKEY =
+		key("hadoop_security_authentication_tbds_securekey")
+			.noDefaultValue()
+			.withDescription("TBDS Securekey.");
+
+
 	// ------------------------------------------------------------------------
 	//  Kerberos Options
 	// ------------------------------------------------------------------------

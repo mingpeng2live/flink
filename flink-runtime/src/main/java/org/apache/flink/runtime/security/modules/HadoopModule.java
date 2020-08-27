@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.security.modules;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.util.HadoopUtils;
 
@@ -72,7 +73,13 @@ public class HadoopModule implements SecurityModule {
 		UserGroupInformation loginUser;
 
 		try {
-			if (UserGroupInformation.isSecurityEnabled() &&
+			LOG.info("Hadoop auth: {} securityInfo: {} {} {}",
+				UserGroupInformation.getLoginUser(),
+				hadoopConfiguration.get(SecurityOptions.TBDS_LOGIN_USERNAME.key()),
+				hadoopConfiguration.get(SecurityOptions.TBDS_LOGIN_SECUREID.key()),
+				hadoopConfiguration.get(SecurityOptions.TBDS_LOGIN_SECUREKEY.key())
+			);
+			if (UserGroupInformation.isSecurityEnabled() && HadoopUtils.isKerberos() &&
 				!StringUtils.isBlank(securityConfig.getKeytab()) && !StringUtils.isBlank(securityConfig.getPrincipal())) {
 				String keytabPath = (new File(securityConfig.getKeytab())).getAbsolutePath();
 
@@ -135,12 +142,16 @@ public class HadoopModule implements SecurityModule {
 				}
 
 				loginUser = UserGroupInformation.getLoginUser();
+				// TODO pengming
+				LOG.info("Hadoop user set to {}", loginUser);
 			}
 
-			boolean isCredentialsConfigured = HadoopUtils.isCredentialsConfigured(
-				loginUser, securityConfig.useTicketCache());
+			if (HadoopUtils.isKerberos()) {
+				boolean isCredentialsConfigured = HadoopUtils.isCredentialsConfigured(
+					loginUser, securityConfig.useTicketCache());
 
-			LOG.info("Hadoop user set to {}, credentials check status: {}", loginUser, isCredentialsConfigured);
+				LOG.info("Hadoop user set to {}, credentials check status: {}", loginUser, isCredentialsConfigured);
+			}
 
 		} catch (Throwable ex) {
 			throw new SecurityInstallException("Unable to set the Hadoop login user", ex);

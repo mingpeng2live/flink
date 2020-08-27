@@ -431,13 +431,17 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			// note: UGI::hasKerberosCredentials inaccurately reports false
 			// for logins based on a keytab (fixed in Hadoop 2.6.1, see HADOOP-10786),
 			// so we check only in ticket cache scenario.
-			boolean useTicketCache = flinkConfiguration.getBoolean(SecurityOptions.KERBEROS_LOGIN_USETICKETCACHE);
+			// TODO pengming
+			LOG.info("deployInternal user: {}", UserGroupInformation.getCurrentUser().getUserName());
+			if (HadoopUtils.isKerberos()) {
+				boolean useTicketCache = flinkConfiguration.getBoolean(SecurityOptions.KERBEROS_LOGIN_USETICKETCACHE);
 
-			boolean isCredentialsConfigured = HadoopUtils.isCredentialsConfigured(
-				UserGroupInformation.getCurrentUser(), useTicketCache);
-			if (!isCredentialsConfigured) {
-				throw new RuntimeException("Hadoop security with Kerberos is enabled but the login user " +
-					"does not have Kerberos credentials or delegation tokens!");
+				boolean isCredentialsConfigured = HadoopUtils.isCredentialsConfigured(
+					UserGroupInformation.getCurrentUser(), useTicketCache);
+				if (!isCredentialsConfigured) {
+					throw new RuntimeException("Hadoop security with Kerberos is enabled but the login user " +
+						"does not have Kerberos credentials or delegation tokens!");
+				}
 			}
 		}
 
@@ -900,9 +904,12 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 				clusterSpecification.getMasterMemoryMB());
 
 		if (UserGroupInformation.isSecurityEnabled()) {
-			// set HDFS delegation tokens when security is enabled
-			LOG.info("Adding delegation token to the AM container.");
-			Utils.setTokensFor(amContainer, paths, yarnConfiguration);
+			// TODO pengming
+			if (HadoopUtils.isKerberos()) {
+				// set HDFS delegation tokens when security is enabled
+				LOG.info("Adding delegation token to the AM container.");
+				Utils.setTokensFor(amContainer, paths, yarnConfiguration);
+			}
 		}
 
 		amContainer.setLocalResources(localResources);

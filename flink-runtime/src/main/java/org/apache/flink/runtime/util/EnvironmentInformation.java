@@ -18,17 +18,16 @@
 
 package org.apache.flink.runtime.util;
 
+import org.apache.flink.util.OperatingSystem;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.InputStream;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Properties;
-
-import org.apache.flink.util.OperatingSystem;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Utility class that gives access to the execution environment of the JVM, like
@@ -101,12 +100,12 @@ public class EnvironmentInformation {
 		}
 		catch (LinkageError e) {
 			// hadoop classes are not in the classpath
-			LOG.debug("Cannot determine user/group information using Hadoop utils. " +
+			LOG.info("Cannot determine user/group information using Hadoop utils. " +
 					"Hadoop classes not loaded or compatible", e);
 		}
 		catch (Throwable t) {
 			// some other error occurred that we should log and make known
-			LOG.warn("Error while accessing user/group information via Hadoop utils.", t);
+			LOG.info("Error while accessing user/group information via Hadoop utils.", t);
 		}
 		
 		return UNKNOWN;

@@ -257,6 +257,7 @@ under the License.
 						</goals>
 						<configuration>
 							<arguments>ci --cache-max=0 --no-save</arguments>
+							<npmRegistryURL>https://registry.npm.taobao.org</npmRegistryURL>
 							<environmentVariables>
 								<HUSKY_SKIP_INSTALL>true</HUSKY_SKIP_INSTALL>
 							</environmentVariables>
@@ -269,6 +270,7 @@ under the License.
 						</goals>
 						<configuration>
 							<arguments>run build</arguments>
+							<npmRegistryURL>https://registry.npm.taobao.org</npmRegistryURL>
 						</configuration>
 					</execution>
 				</executions>

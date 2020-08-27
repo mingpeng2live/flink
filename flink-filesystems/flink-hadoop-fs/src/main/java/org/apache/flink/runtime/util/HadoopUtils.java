@@ -20,6 +20,7 @@ package org.apache.flink.runtime.util;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import org.apache.hadoop.conf.Configuration;
@@ -33,6 +34,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Collection;
 
 /**
@@ -109,7 +111,27 @@ public class HadoopUtils {
 				"(Flink configuration, environment variables).");
 		}
 
+		// TODO pengming
+		if (isTBDS()) {
+			result.set(SecurityOptions.TBDS_LOGIN_SECUREID.key(), flinkConfiguration.getString(SecurityOptions.TBDS_LOGIN_SECUREID));
+			result.set(SecurityOptions.TBDS_LOGIN_USERNAME.key(), flinkConfiguration.getString(SecurityOptions.TBDS_LOGIN_USERNAME));
+			result.set(SecurityOptions.TBDS_LOGIN_SECUREKEY.key(), flinkConfiguration.getString(SecurityOptions.TBDS_LOGIN_SECUREKEY));
+		}
+
 		return result;
+	}
+
+	public static boolean isKerberos() throws Exception {
+		return UserGroupInformation.getLoginUser().getAuthenticationMethod() == UserGroupInformation.AuthenticationMethod.KERBEROS;
+	}
+
+	public static boolean isTBDS() {
+		try {
+			return UserGroupInformation.getLoginUser().getAuthenticationMethod().getAuthMethod().getMechanismName().equalsIgnoreCase("TBDS_PLAIN");
+		} catch (IOException e) {
+			LOG.error("get login user error", e);
+		}
+		return false;
 	}
 
 	public static boolean isCredentialsConfigured(UserGroupInformation ugi, boolean useTicketCache) throws Exception {

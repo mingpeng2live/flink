@@ -76,6 +76,8 @@ public final class Documentation {
 		public static final String COMMON_MISCELLANEOUS = "common_miscellaneous";
 
 		public static final String SECURITY_SSL = "security_ssl";
+		// TODO pengming
+		public static final String SECURITY_AUTH_TBDS = "security_auth_tbds";
 		public static final String SECURITY_AUTH_KERBEROS = "security_auth_kerberos";
 		public static final String SECURITY_AUTH_ZOOKEEPER = "security_auth_zk";
 
