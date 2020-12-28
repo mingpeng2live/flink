@@ -37,14 +37,11 @@ import org.apache.flink.runtime.checkpoint.MasterTriggerRestoreHook;
 import org.apache.flink.runtime.checkpoint.hooks.MasterHooks;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.client.JobSubmissionException;
-import org.apache.flink.runtime.executiongraph.failover.FailoverStrategy;
-import org.apache.flink.runtime.executiongraph.failover.FailoverStrategyLoader;
 import org.apache.flink.runtime.executiongraph.failover.flip1.partitionrelease.PartitionReleaseStrategy;
 import org.apache.flink.runtime.executiongraph.failover.flip1.partitionrelease.PartitionReleaseStrategyFactoryLoader;
 import org.apache.flink.runtime.executiongraph.metrics.DownTimeGauge;
 import org.apache.flink.runtime.executiongraph.metrics.RestartTimeGauge;
 import org.apache.flink.runtime.executiongraph.metrics.UpTimeGauge;
-import org.apache.flink.runtime.executiongraph.restart.RestartStrategy;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
@@ -93,16 +90,13 @@ public class ExecutionGraphBuilder {
 			ClassLoader classLoader,
 			CheckpointRecoveryFactory recoveryFactory,
 			Time rpcTimeout,
-			RestartStrategy restartStrategy,
 			MetricGroup metrics,
 			BlobWriter blobWriter,
 			Time allocationTimeout,
 			Logger log,
 			ShuffleMaster<?> shuffleMaster,
-			JobMasterPartitionTracker partitionTracker) throws JobExecutionException, JobException {
-
-		final FailoverStrategy.Factory failoverStrategy =
-			FailoverStrategyLoader.loadFailoverStrategy(jobManagerConfig, log);
+			JobMasterPartitionTracker partitionTracker,
+			long initializationTimestamp) throws JobExecutionException, JobException {
 
 		return buildGraph(
 			prior,
@@ -114,16 +108,15 @@ public class ExecutionGraphBuilder {
 			classLoader,
 			recoveryFactory,
 			rpcTimeout,
-			restartStrategy,
 			metrics,
 			blobWriter,
 			allocationTimeout,
 			log,
 			shuffleMaster,
 			partitionTracker,
-			failoverStrategy,
 			NoOpExecutionDeploymentListener.get(),
-			(execution, newState) -> {});
+			(execution, newState) -> {},
+			initializationTimestamp);
 	}
 
 	public static ExecutionGraph buildGraph(
@@ -136,16 +129,15 @@ public class ExecutionGraphBuilder {
 		ClassLoader classLoader,
 		CheckpointRecoveryFactory recoveryFactory,
 		Time rpcTimeout,
-		RestartStrategy restartStrategy,
 		MetricGroup metrics,
 		BlobWriter blobWriter,
 		Time allocationTimeout,
 		Logger log,
 		ShuffleMaster<?> shuffleMaster,
 		JobMasterPartitionTracker partitionTracker,
-		FailoverStrategy.Factory failoverStrategyFactory,
 		ExecutionDeploymentListener executionDeploymentListener,
-		ExecutionStateUpdateListener executionStateUpdateListener) throws JobExecutionException, JobException {
+		ExecutionStateUpdateListener executionStateUpdateListener,
+		long initializationTimestamp) throws JobExecutionException, JobException {
 
 		checkNotNull(jobGraph, "job graph cannot be null");
 
@@ -175,9 +167,7 @@ public class ExecutionGraphBuilder {
 					futureExecutor,
 					ioExecutor,
 					rpcTimeout,
-					restartStrategy,
 					maxPriorAttemptsHistoryLength,
-					failoverStrategyFactory,
 					slotProvider,
 					classLoader,
 					blobWriter,
@@ -187,7 +177,8 @@ public class ExecutionGraphBuilder {
 					partitionTracker,
 					jobGraph.getScheduleMode(),
 					executionDeploymentListener,
-					executionStateUpdateListener);
+					executionStateUpdateListener,
+					initializationTimestamp);
 		} catch (IOException e) {
 			throw new JobException("Could not create the ExecutionGraph.", e);
 		}
@@ -360,8 +351,6 @@ public class ExecutionGraphBuilder {
 		metrics.gauge(RestartTimeGauge.METRIC_NAME, new RestartTimeGauge(executionGraph));
 		metrics.gauge(DownTimeGauge.METRIC_NAME, new DownTimeGauge(executionGraph));
 		metrics.gauge(UpTimeGauge.METRIC_NAME, new UpTimeGauge(executionGraph));
-
-		executionGraph.getFailoverStrategy().registerMetrics(metrics);
 
 		return executionGraph;
 	}

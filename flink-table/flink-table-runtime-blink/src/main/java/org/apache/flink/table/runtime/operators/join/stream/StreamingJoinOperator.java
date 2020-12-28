@@ -20,9 +20,9 @@ package org.apache.flink.table.runtime.operators.join.stream;
 
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.GenericRowData;
-import org.apache.flink.table.data.JoinedRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.util.RowDataUtil;
+import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition;
 import org.apache.flink.table.runtime.operators.join.stream.state.JoinInputSideSpec;
 import org.apache.flink.table.runtime.operators.join.stream.state.JoinRecordStateView;
@@ -62,8 +62,8 @@ public class StreamingJoinOperator extends AbstractStreamingJoinOperator {
 			boolean leftIsOuter,
 			boolean rightIsOuter,
 			boolean[] filterNullKeys,
-			long minRetentionTime) {
-		super(leftType, rightType, generatedJoinCondition, leftInputSideSpec, rightInputSideSpec, filterNullKeys, minRetentionTime);
+			long stateRetentionTime) {
+		super(leftType, rightType, generatedJoinCondition, leftInputSideSpec, rightInputSideSpec, filterNullKeys, stateRetentionTime);
 		this.leftIsOuter = leftIsOuter;
 		this.rightIsOuter = rightIsOuter;
 	}
@@ -83,14 +83,14 @@ public class StreamingJoinOperator extends AbstractStreamingJoinOperator {
 				"left-records",
 				leftInputSideSpec,
 				leftType,
-				minRetentionTime);
+				stateRetentionTime);
 		} else {
 			this.leftRecordStateView = JoinRecordStateViews.create(
 				getRuntimeContext(),
 				"left-records",
 				leftInputSideSpec,
 				leftType,
-				minRetentionTime);
+				stateRetentionTime);
 		}
 
 		if (rightIsOuter) {
@@ -99,14 +99,14 @@ public class StreamingJoinOperator extends AbstractStreamingJoinOperator {
 				"right-records",
 				rightInputSideSpec,
 				rightType,
-				minRetentionTime);
+				stateRetentionTime);
 		} else {
 			this.rightRecordStateView = JoinRecordStateViews.create(
 				getRuntimeContext(),
 				"right-records",
 				rightInputSideSpec,
 				rightType,
-				minRetentionTime);
+				stateRetentionTime);
 		}
 	}
 

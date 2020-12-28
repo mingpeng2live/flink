@@ -22,11 +22,15 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.annotation.FunctionHint;
+import org.apache.flink.table.api.dataview.DataView;
 import org.apache.flink.table.api.dataview.ListView;
 import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.FunctionRequirement;
 import org.apache.flink.table.functions.TableAggregateFunction;
+import org.apache.flink.table.functions.python.PythonEnv;
+import org.apache.flink.table.functions.python.PythonFunction;
+import org.apache.flink.table.functions.python.PythonFunctionKind;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 
@@ -111,6 +115,48 @@ public class JavaUserDefinedAggFunctions {
 		public void accumulate(WeightedAvgAccum accumulator, int iValue, int iWeight) {
 			accumulator.sum += iValue * iWeight;
 			accumulator.count += iWeight;
+		}
+	}
+
+	/**
+	 * Test for General Python Aggregate Function.
+	 */
+	public static class TestPythonAggregateFunction extends WeightedAvg implements PythonFunction {
+
+		@Override
+		public byte[] getSerializedPythonFunction() {
+			return new byte[0];
+		}
+
+		@Override
+		public PythonEnv getPythonEnv() {
+			return null;
+		}
+
+		@Override
+		public PythonFunctionKind getPythonFunctionKind() {
+			return PythonFunctionKind.GENERAL;
+		}
+	}
+
+	/**
+	 * Test for Pandas Python Aggregate Function.
+	 */
+	public static class PandasAggregateFunction extends WeightedAvg implements PythonFunction {
+
+		@Override
+		public byte[] getSerializedPythonFunction() {
+			return new byte[0];
+		}
+
+		@Override
+		public PythonEnv getPythonEnv() {
+			return null;
+		}
+
+		@Override
+		public PythonFunctionKind getPythonFunctionKind() {
+			return PythonFunctionKind.PANDAS;
 		}
 	}
 
@@ -297,10 +343,10 @@ public class JavaUserDefinedAggFunctions {
 	 * Accumulator for test DataView.
 	 */
 	public static class DataViewTestAccum {
-		public MapView<String, Integer> map;
-		public MapView<String, Integer> map2; // for test not initialized
-		public long count;
-		private ListView<Long> list = new ListView<>(Types.LONG);
+		public MapView<String, Integer> map = new MapView<>();
+		public MapView<String, Integer> map2 = new MapView<>();
+		public long count = 0L;
+		private ListView<Long> list = new ListView<>();
 
 		public ListView<Long> getList() {
 			return list;
@@ -314,19 +360,16 @@ public class JavaUserDefinedAggFunctions {
 	public static boolean isCloseCalled = false;
 
 	/**
-	 * Aggregate for test DataView.
+	 * Aggregate for test {@link DataView}.
 	 */
 	public static class DataViewTestAgg extends AggregateFunction<Long, DataViewTestAccum> {
 		@Override
 		public DataViewTestAccum createAccumulator() {
-			DataViewTestAccum accum = new DataViewTestAccum();
-			accum.map = new MapView<>(Types.STRING, Types.INT);
-			accum.count = 0L;
-			return accum;
+			return new DataViewTestAccum();
 		}
 
 		// Overloaded accumulate method
-		public void accumulate(DataViewTestAccum accumulator, String a, long b) {
+		public void accumulate(DataViewTestAccum accumulator, String a, Long b) {
 			try {
 				if (!accumulator.map.contains(a)) {
 					accumulator.map.put(a, 1);

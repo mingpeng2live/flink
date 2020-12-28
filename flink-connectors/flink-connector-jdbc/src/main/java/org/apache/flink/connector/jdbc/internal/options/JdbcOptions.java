@@ -22,6 +22,8 @@ import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.dialect.JdbcDialect;
 import org.apache.flink.connector.jdbc.dialect.JdbcDialects;
 
+import javax.annotation.Nullable;
+
 import java.util.Objects;
 import java.util.Optional;
 
@@ -34,16 +36,15 @@ public class JdbcOptions extends JdbcConnectionOptions {
 
 	private static final long serialVersionUID = 1L;
 
-	public static final int CONNECTION_CHECK_TIMEOUT_SECONDS = 60;
-
 	private String tableName;
 	private JdbcDialect dialect;
+	private final @Nullable Integer parallelism;
 
-	private JdbcOptions(String dbURL, String tableName, String driverName, String username,
-						String password, JdbcDialect dialect) {
-		super(dbURL, driverName, username, password);
+	private JdbcOptions(String dbURL, String tableName, String driverName, String username, String password, JdbcDialect dialect, Integer parallelism, int connectionCheckTimeoutSeconds) {
+		super(dbURL, driverName, username, password, connectionCheckTimeoutSeconds);
 		this.tableName = tableName;
 		this.dialect = dialect;
+		this.parallelism = parallelism;
 	}
 
 	public String getTableName() {
@@ -52,6 +53,10 @@ public class JdbcOptions extends JdbcConnectionOptions {
 
 	public JdbcDialect getDialect() {
 		return dialect;
+	}
+
+	public Integer getParallelism() {
+		return parallelism;
 	}
 
 	public static Builder builder() {
@@ -67,10 +72,18 @@ public class JdbcOptions extends JdbcConnectionOptions {
 				Objects.equals(driverName, options.driverName) &&
 				Objects.equals(username, options.username) &&
 				Objects.equals(password, options.password) &&
-				Objects.equals(dialect.getClass().getName(), options.dialect.getClass().getName());
+				Objects.equals(dialect.getClass().getName(), options.dialect.getClass().getName()) &&
+				Objects.equals(parallelism, options.parallelism) &&
+				Objects.equals(connectionCheckTimeoutSeconds, options.connectionCheckTimeoutSeconds);
 		} else {
 			return false;
 		}
+
+	}
+
+	@Override
+	public int hashCode() {
+		return Objects.hash(url, tableName, driverName, username, password, dialect.getClass().getName(), parallelism, connectionCheckTimeoutSeconds);
 	}
 
 	/**
@@ -83,6 +96,8 @@ public class JdbcOptions extends JdbcConnectionOptions {
 		private String username;
 		private String password;
 		private JdbcDialect dialect;
+		private Integer parallelism;
+		private int connectionCheckTimeoutSeconds = 60;
 
 		/**
 		 * required, table name.
@@ -105,6 +120,14 @@ public class JdbcOptions extends JdbcConnectionOptions {
 		 */
 		public Builder setPassword(String password) {
 			this.password = password;
+			return this;
+		}
+
+		/**
+		 * optional, connectionCheckTimeoutSeconds.
+		 */
+		public Builder setConnectionCheckTimeoutSeconds(int connectionCheckTimeoutSeconds) {
+			this.connectionCheckTimeoutSeconds = connectionCheckTimeoutSeconds;
 			return this;
 		}
 
@@ -134,6 +157,11 @@ public class JdbcOptions extends JdbcConnectionOptions {
 			return this;
 		}
 
+		public Builder setParallelism(Integer parallelism) {
+			this.parallelism = parallelism;
+			return this;
+		}
+
 		public JdbcOptions build() {
 			checkNotNull(dbURL, "No dbURL supplied.");
 			checkNotNull(tableName, "No tableName supplied.");
@@ -150,7 +178,7 @@ public class JdbcOptions extends JdbcConnectionOptions {
 				});
 			}
 
-			return new JdbcOptions(dbURL, tableName, driverName, username, password, dialect);
+			return new JdbcOptions(dbURL, tableName, driverName, username, password, dialect, parallelism, connectionCheckTimeoutSeconds);
 		}
 	}
 }

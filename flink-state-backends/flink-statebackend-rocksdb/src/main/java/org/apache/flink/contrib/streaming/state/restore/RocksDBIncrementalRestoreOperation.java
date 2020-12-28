@@ -54,8 +54,6 @@ import org.rocksdb.DBOptions;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
@@ -79,13 +77,13 @@ import java.util.UUID;
 import java.util.function.Function;
 
 import static org.apache.flink.contrib.streaming.state.snapshot.RocksSnapshotUtil.SST_FILE_SUFFIX;
+import static org.apache.flink.runtime.state.StateUtil.unexpectedStateHandleException;
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
  * Encapsulates the process of restoring a RocksDB instance from an incremental snapshot.
  */
 public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestoreOperation<K> {
-	private static final Logger LOG = LoggerFactory.getLogger(RocksDBIncrementalRestoreOperation.class);
 
 	private final String operatorIdentifier;
 	private final SortedMap<Long, Set<StateHandleID>> restoredSstFiles;
@@ -110,7 +108,8 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		MetricGroup metricGroup,
 		@Nonnull Collection<KeyedStateHandle> restoreStateHandles,
 		@Nonnull RocksDbTtlCompactFiltersManager ttlCompactFiltersManager,
-		@Nonnegative long writeBatchSize) {
+		@Nonnegative long writeBatchSize,
+		Long writeBufferManagerCapacity) {
 		super(keyGroupRange,
 			keyGroupPrefixBytes,
 			numberOfTransferringThreads,
@@ -125,7 +124,8 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			nativeMetricOptions,
 			metricGroup,
 			restoreStateHandles,
-			ttlCompactFiltersManager);
+			ttlCompactFiltersManager,
+			writeBufferManagerCapacity);
 		this.operatorIdentifier = operatorIdentifier;
 		this.restoredSstFiles = new TreeMap<>();
 		this.lastCompletedCheckpointId = -1L;
@@ -161,7 +161,9 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 	/**
 	 * Recovery from a single remote incremental state without rescaling.
 	 */
+	@SuppressWarnings("unchecked")
 	private void restoreWithoutRescaling(KeyedStateHandle keyedStateHandle) throws Exception {
+		logger.info("Starting to restore from state handle: {} without rescaling.", keyedStateHandle);
 		if (keyedStateHandle instanceof IncrementalRemoteKeyedStateHandle) {
 			IncrementalRemoteKeyedStateHandle incrementalRemoteKeyedStateHandle =
 				(IncrementalRemoteKeyedStateHandle) keyedStateHandle;
@@ -173,10 +175,11 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			restorePreviousIncrementalFilesStatus(incrementalLocalKeyedStateHandle);
 			restoreFromLocalState(incrementalLocalKeyedStateHandle);
 		} else {
-			throw new BackendBuildingException("Unexpected state handle type, " +
-				"expected " + IncrementalRemoteKeyedStateHandle.class + " or " + IncrementalLocalKeyedStateHandle.class +
-				", but found " + keyedStateHandle.getClass());
+			throw unexpectedStateHandleException(
+					new Class[]{IncrementalRemoteKeyedStateHandle.class, IncrementalLocalKeyedStateHandle.class},
+					keyedStateHandle.getClass());
 		}
+		logger.info("Finished restoring from state handle: {} without rescaling.", keyedStateHandle);
 	}
 
 	private void restorePreviousIncrementalFilesStatus(IncrementalKeyedStateHandle localKeyedStateHandle) {
@@ -201,17 +204,17 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 	private void restoreFromLocalState(IncrementalLocalKeyedStateHandle localKeyedStateHandle) throws Exception {
 		KeyedBackendSerializationProxy<K> serializationProxy = readMetaData(localKeyedStateHandle.getMetaDataState());
 		List<StateMetaInfoSnapshot> stateMetaInfoSnapshots = serializationProxy.getStateMetaInfoSnapshots();
-		columnFamilyDescriptors = createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots, true);
+		columnFamilyDescriptors = createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots, true, writeBufferManagerCapacity);
 		columnFamilyHandles = new ArrayList<>(columnFamilyDescriptors.size() + 1);
 
 		Path restoreSourcePath = localKeyedStateHandle.getDirectoryStateHandle().getDirectory();
 
-		LOG.debug("Restoring keyed backend uid in operator {} from incremental snapshot to {}.",
+		logger.debug("Restoring keyed backend uid in operator {} from incremental snapshot to {}.",
 			operatorIdentifier, backendUID);
 
 		if (!instanceRocksDBPath.mkdirs()) {
 			String errMsg = "Could not create RocksDB data directory: " + instanceBasePath.getAbsolutePath();
-			LOG.error(errMsg);
+			logger.error(errMsg);
 			throw new IOException(errMsg);
 		}
 
@@ -248,7 +251,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		try {
 			FileUtils.deleteDirectory(path.toFile());
 		} catch (IOException ex) {
-			LOG.warn("Failed to clean up path " + path, ex);
+			logger.warn("Failed to clean up path " + path, ex);
 		}
 	}
 
@@ -288,11 +291,10 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		for (KeyedStateHandle rawStateHandle : restoreStateHandles) {
 
 			if (!(rawStateHandle instanceof IncrementalRemoteKeyedStateHandle)) {
-				throw new IllegalStateException("Unexpected state handle type, " +
-					"expected " + IncrementalRemoteKeyedStateHandle.class +
-					", but found " + rawStateHandle.getClass());
+				throw unexpectedStateHandleException(IncrementalRemoteKeyedStateHandle.class, rawStateHandle.getClass());
 			}
 
+			logger.info("Starting to restore from state handle: {} with rescaling.", rawStateHandle);
 			Path temporaryRestoreInstancePath = instanceBasePath.getAbsoluteFile().toPath().resolve(UUID.randomUUID().toString());
 			try (RestoredDBInstance tmpRestoreDBInfo = restoreDBInstanceFromStateHandle(
 				(IncrementalRemoteKeyedStateHandle) rawStateHandle,
@@ -328,6 +330,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 						}
 					} // releases native iterator resources
 				}
+				logger.info("Finished restoring from state handle: {} with rescaling.", rawStateHandle);
 			} finally {
 				cleanUpPathQuietly(temporaryRestoreInstancePath);
 			}
@@ -352,7 +355,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 				writeBatchSize);
 		} catch (RocksDBException e) {
 			String errMsg = "Failed to clip DB after initialization.";
-			LOG.error(errMsg, e);
+			logger.error(errMsg, e);
 			throw new BackendBuildingException(errMsg, e);
 		}
 	}
@@ -422,7 +425,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		List<StateMetaInfoSnapshot> stateMetaInfoSnapshots = serializationProxy.getStateMetaInfoSnapshots();
 
 		List<ColumnFamilyDescriptor> columnFamilyDescriptors =
-			createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots, false);
+			createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots, false, writeBufferManagerCapacity);
 
 		List<ColumnFamilyHandle> columnFamilyHandles =
 			new ArrayList<>(stateMetaInfoSnapshots.size() + 1);
@@ -442,7 +445,8 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 	 */
 	private List<ColumnFamilyDescriptor> createAndRegisterColumnFamilyDescriptors(
 		List<StateMetaInfoSnapshot> stateMetaInfoSnapshots,
-		boolean registerTtlCompactFilter) {
+		boolean registerTtlCompactFilter,
+		Long writeBufferManagerCapacity) {
 
 		List<ColumnFamilyDescriptor> columnFamilyDescriptors =
 			new ArrayList<>(stateMetaInfoSnapshots.size());
@@ -451,7 +455,9 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			RegisteredStateMetaInfoBase metaInfoBase =
 				RegisteredStateMetaInfoBase.fromMetaInfoSnapshot(stateMetaInfoSnapshot);
 			ColumnFamilyDescriptor columnFamilyDescriptor = RocksDBOperationUtils.createColumnFamilyDescriptor(
-				metaInfoBase, columnFamilyOptionsFactory, registerTtlCompactFilter ? ttlCompactFiltersManager : null);
+				metaInfoBase, columnFamilyOptionsFactory, registerTtlCompactFilter ? ttlCompactFiltersManager : null,
+				writeBufferManagerCapacity);
+
 			columnFamilyDescriptors.add(columnFamilyDescriptor);
 		}
 		return columnFamilyDescriptors;

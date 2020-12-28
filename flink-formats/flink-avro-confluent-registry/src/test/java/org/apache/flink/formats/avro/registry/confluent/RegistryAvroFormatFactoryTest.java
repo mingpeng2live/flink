@@ -101,7 +101,7 @@ public class RegistryAvroFormatFactoryTest {
 								SUBJECT,
 								AvroSchemaConverter.convertToSchema(ROW_TYPE),
 								REGISTRY_URL),
-						RowDataToAvroConverters.createRowConverter(ROW_TYPE));
+						RowDataToAvroConverters.createConverter(ROW_TYPE));
 
 		final DynamicTableSink actualSink = createTableSink(getDefaultOptions());
 		assertThat(actualSink, instanceOf(TestDynamicTableFactory.DynamicTableSinkMock.class));
@@ -163,7 +163,8 @@ public class RegistryAvroFormatFactoryTest {
 				ObjectIdentifier.of("default", "default", "t1"),
 				new CatalogTableImpl(SCHEMA, options, "mock source"),
 				new Configuration(),
-				RegistryAvroFormatFactoryTest.class.getClassLoader());
+				RegistryAvroFormatFactoryTest.class.getClassLoader(),
+				false);
 	}
 
 	private DynamicTableSink createTableSink(Map<String, String> options) {
@@ -172,6 +173,7 @@ public class RegistryAvroFormatFactoryTest {
 				ObjectIdentifier.of("default", "default", "t1"),
 				new CatalogTableImpl(SCHEMA, options, "mock sink"),
 				new Configuration(),
-				RegistryAvroFormatFactoryTest.class.getClassLoader());
+				RegistryAvroFormatFactoryTest.class.getClassLoader(),
+				false);
 	}
 }

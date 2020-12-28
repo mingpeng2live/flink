@@ -428,12 +428,14 @@ public class LocalExecutorITCase extends TestLogger {
 
 		TableResult tableResult = executor.executeSql(sessionId, "DESCRIBE TableNumber2");
 		assertEquals(
-				tableResult.getTableSchema(),
-				TableSchema.builder().fields(
-						new String[] { "name", "type", "null", "key", "computed column", "watermark" },
+			TableSchema.builder()
+					.fields(
+						new String[] { "name", "type", "null", "key", "extras", "watermark" },
 						new DataType[] { DataTypes.STRING(), DataTypes.STRING(), DataTypes.BOOLEAN(),
 								DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING() }
-				).build()
+					)
+					.build(),
+			tableResult.getTableSchema()
 		);
 		List<Row> schemaData = Arrays.asList(
 				Row.of("IntegerField2", "INT", true, null, null, null),
@@ -1023,6 +1025,35 @@ public class LocalExecutorITCase extends TestLogger {
 	}
 
 	@Test
+	public void testCreateTableIfNotExists() throws Exception {
+		final Executor executor = createDefaultExecutor(clusterClient);
+		final SessionContext session = new SessionContext("test-session", new Environment());
+		String sessionId = executor.openSession(session);
+		final String ddlTemplate = "create table if not exists %s(\n" +
+			"  a int,\n" +
+			"  b bigint,\n" +
+			"  c varchar\n" +
+			") with (\n" +
+			"  'connector.type'='filesystem',\n" +
+			"  'format.type'='csv',\n" +
+			"  'connector.path'='xxx'\n" +
+			")\n";
+		try {
+			// Test create table twice.
+			executor.executeSql(sessionId, "use catalog catalog1");
+			executor.executeSql(sessionId, String.format(ddlTemplate, "MyTable1"));
+			executor.executeSql(sessionId, String.format(ddlTemplate, "MyTable1"));
+			assertShowResult(executor.executeSql(sessionId, "SHOW TABLES"), Collections.singletonList("MyTable1"));
+
+			executor.executeSql(sessionId, String.format(ddlTemplate, "MyTable2"));
+			executor.executeSql(sessionId, String.format(ddlTemplate, "MyTable2"));
+			assertShowResult(executor.executeSql(sessionId, "SHOW TABLES"), Arrays.asList("MyTable1", "MyTable2"));
+		} finally {
+			executor.closeSession(sessionId);
+		}
+	}
+
+	@Test
 	public void testCreateTableWithComputedColumn() throws Exception {
 		// only blink planner support computed column for DDL
 		Assume.assumeTrue(planner.equals("blink"));
@@ -1462,7 +1493,7 @@ public class LocalExecutorITCase extends TestLogger {
 				EnvironmentFileUtil.parseModified(DEFAULTS_ENVIRONMENT_FILE, replaceVars),
 				Collections.emptyList(),
 				clusterClient.getFlinkConfiguration(),
-				new DefaultCLI(clusterClient.getFlinkConfiguration()),
+				new DefaultCLI(),
 				new DefaultClusterClientServiceLoader());
 	}
 
@@ -1472,7 +1503,7 @@ public class LocalExecutorITCase extends TestLogger {
 				EnvironmentFileUtil.parseModified(DEFAULTS_ENVIRONMENT_FILE, replaceVars),
 				Collections.singletonList(udfDependency),
 				clusterClient.getFlinkConfiguration(),
-				new DefaultCLI(clusterClient.getFlinkConfiguration()),
+				new DefaultCLI(),
 				new DefaultClusterClientServiceLoader());
 	}
 
@@ -1483,7 +1514,7 @@ public class LocalExecutorITCase extends TestLogger {
 				EnvironmentFileUtil.parseModified(yamlFile, replaceVars),
 				Collections.emptyList(),
 				clusterClient.getFlinkConfiguration(),
-				new DefaultCLI(clusterClient.getFlinkConfiguration()),
+				new DefaultCLI(),
 				new DefaultClusterClientServiceLoader());
 	}
 

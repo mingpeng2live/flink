@@ -80,6 +80,11 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 		.noDefaultValue()
 		.withDescription("the class name of the JDBC driver to use to connect to this URL. " +
 			"If not set, it will automatically be derived from the URL.");
+	public static final ConfigOption<Duration> MAX_RETRY_TIMEOUT = ConfigOptions
+		.key("connection.max-retry-timeout")
+		.durationType()
+		.defaultValue(Duration.ofSeconds(60))
+		.withDescription("Maximum timeout between retries.");
 
 	// read config options
 	private static final ConfigOption<String> SCAN_PARTITION_COLUMN = ConfigOptions
@@ -109,6 +114,12 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 		.withDescription("gives the reader a hint as to the number of rows that should be fetched, from" +
 			" the database when reading per round trip. If the value specified is zero, then the hint is ignored. The" +
 			" default value is zero.");
+	private static final ConfigOption<Boolean> SCAN_AUTO_COMMIT = ConfigOptions
+		.key("scan.auto-commit")
+		.booleanType()
+		.defaultValue(true)
+		.withDescription("sets whether the driver is in auto-commit mode. The default value is true, per" +
+			" the JDBC spec.");
 
 	// look up config options
 	private static final ConfigOption<Long> LOOKUP_CACHE_MAX_ROWS = ConfigOptions
@@ -185,7 +196,9 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 		final JdbcOptions.Builder builder = JdbcOptions.builder()
 			.setDBUrl(url)
 			.setTableName(readableConfig.get(TABLE_NAME))
-			.setDialect(JdbcDialects.get(url).get());
+			.setDialect(JdbcDialects.get(url).get())
+			.setParallelism(readableConfig.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
+			.setConnectionCheckTimeoutSeconds((int) readableConfig.get(MAX_RETRY_TIMEOUT).getSeconds());
 
 		readableConfig.getOptional(DRIVER).ifPresent(builder::setDriverName);
 		readableConfig.getOptional(USERNAME).ifPresent(builder::setUsername);
@@ -203,6 +216,7 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 			builder.setNumPartitions(readableConfig.get(SCAN_PARTITION_NUM));
 		}
 		readableConfig.getOptional(SCAN_FETCH_SIZE).ifPresent(builder::setFetchSize);
+		builder.setAutoCommit(readableConfig.get(SCAN_AUTO_COMMIT));
 		return builder.build();
 	}
 
@@ -258,12 +272,15 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 		optionalOptions.add(SCAN_PARTITION_UPPER_BOUND);
 		optionalOptions.add(SCAN_PARTITION_NUM);
 		optionalOptions.add(SCAN_FETCH_SIZE);
+		optionalOptions.add(SCAN_AUTO_COMMIT);
 		optionalOptions.add(LOOKUP_CACHE_MAX_ROWS);
 		optionalOptions.add(LOOKUP_CACHE_TTL);
 		optionalOptions.add(LOOKUP_MAX_RETRIES);
 		optionalOptions.add(SINK_BUFFER_FLUSH_MAX_ROWS);
 		optionalOptions.add(SINK_BUFFER_FLUSH_INTERVAL);
 		optionalOptions.add(SINK_MAX_RETRIES);
+		optionalOptions.add(FactoryUtil.SINK_PARALLELISM);
+		optionalOptions.add(MAX_RETRY_TIMEOUT);
 		return optionalOptions;
 	}
 
@@ -300,6 +317,27 @@ public class JdbcDynamicTableFactory implements DynamicTableSourceFactory, Dynam
 			LOOKUP_CACHE_MAX_ROWS,
 			LOOKUP_CACHE_TTL
 		});
+
+		if (config.get(LOOKUP_MAX_RETRIES) < 0) {
+			throw new IllegalArgumentException(String.format(
+				"The value of '%s' option shouldn't be negative, but is %s.",
+				LOOKUP_MAX_RETRIES.key(),
+				config.get(LOOKUP_MAX_RETRIES)));
+		}
+
+		if (config.get(SINK_MAX_RETRIES) < 0) {
+			throw new IllegalArgumentException(String.format(
+				"The value of '%s' option shouldn't be negative, but is %s.",
+				SINK_MAX_RETRIES.key(),
+				config.get(SINK_MAX_RETRIES)));
+		}
+
+		if (config.get(MAX_RETRY_TIMEOUT).getSeconds() <= 0) {
+			throw new IllegalArgumentException(String.format(
+				"The value of '%s' option must be in second granularity and shouldn't be smaller than 1 second, but is %s.",
+				MAX_RETRY_TIMEOUT.key(),
+				config.get(ConfigOptions.key(MAX_RETRY_TIMEOUT.key()).stringType().noDefaultValue())));
+		}
 	}
 
 	private void checkAllOrNone(ReadableConfig config, ConfigOption<?>[] configOptions) {

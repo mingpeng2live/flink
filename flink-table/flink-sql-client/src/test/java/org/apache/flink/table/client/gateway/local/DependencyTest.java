@@ -96,7 +96,7 @@ public class DependencyTest {
 			assertEquals(
 					tableResult.getTableSchema(),
 					TableSchema.builder().fields(
-							new String[] { "name", "type", "null", "key", "computed column", "watermark" },
+							new String[] { "name", "type", "null", "key", "extras", "watermark" },
 							new DataType[] { DataTypes.STRING(), DataTypes.STRING(), DataTypes.BOOLEAN(),
 									DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING() }
 					).build()
@@ -141,7 +141,7 @@ public class DependencyTest {
 			env,
 			Collections.singletonList(dependency),
 			new Configuration(),
-			new DefaultCLI(new Configuration()),
+			new DefaultCLI(),
 			new DefaultClusterClientServiceLoader());
 	}
 

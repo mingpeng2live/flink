@@ -41,6 +41,7 @@ import javax.annotation.Nonnull;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.concurrent.Executors;
@@ -49,7 +50,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
-import static org.apache.flink.connector.jdbc.internal.options.JdbcOptions.CONNECTION_CHECK_TIMEOUT_SECONDS;
 import static org.apache.flink.connector.jdbc.utils.JdbcUtils.setRecordToStatement;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -132,7 +132,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 	private JdbcExec createAndOpenStatementExecutor(StatementExecutorFactory<JdbcExec> statementExecutorFactory) throws IOException {
 		JdbcExec exec = statementExecutorFactory.apply(getRuntimeContext());
 		try {
-			exec.prepareStatements(connection);
+			exec.prepareStatements(connectionProvider.getConnection());
 		} catch (SQLException e) {
 			throw new IOException("unable to open JDBC writer", e);
 		}
@@ -152,7 +152,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 		try {
 			addToBatch(record, jdbcRecordExtractor.apply(record));
 			batchCount++;
-			if (batchCount >= executionOptions.getBatchSize()) {
+			if (executionOptions.getBatchSize() > 0 && batchCount >= executionOptions.getBatchSize()) {
 				flush();
 			}
 		} catch (Exception e) {
@@ -168,7 +168,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 	public synchronized void flush() throws IOException {
 		checkFlushException();
 
-		for (int i = 1; i <= executionOptions.getMaxRetries(); i++) {
+		for (int i = 0; i <= executionOptions.getMaxRetries(); i++) {
 			try {
 				attemptFlush();
 				batchCount = 0;
@@ -179,14 +179,14 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 					throw new IOException(e);
 				}
 				try {
-					if (!connection.isValid(CONNECTION_CHECK_TIMEOUT_SECONDS)) {
-						connection = connectionProvider.reestablishConnection();
+					if (!connectionProvider.isConnectionValid()){
 						jdbcStatementExecutor.closeStatements();
+						Connection connection = connectionProvider.reestablishConnection();
 						jdbcStatementExecutor.prepareStatements(connection);
 					}
-				} catch (Exception excpetion) {
-					LOG.error("JDBC connection is not valid, and reestablish connection failed.", excpetion);
-					throw new IOException("Reestablish JDBC connection failed", excpetion);
+				} catch (Exception exception) {
+					LOG.error("JDBC connection is not valid, and reestablish connection failed.", exception);
+					throw new IOException("Reestablish JDBC connection failed", exception);
 				}
 				try {
 					Thread.sleep(1000 * i);

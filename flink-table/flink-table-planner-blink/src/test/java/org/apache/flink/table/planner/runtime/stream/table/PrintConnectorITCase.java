@@ -35,6 +35,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -68,16 +69,41 @@ public class PrintConnectorITCase extends StreamingTestBase {
 	}
 
 	@Test
-	public void testTypes() {
+	public void testTypes() throws Exception {
 		test(false);
 	}
 
 	@Test
-	public void testStandardError() {
+	public void testStandardError() throws Exception {
 		test(true);
 	}
 
-	private void test(boolean standardError) {
+	@Test
+	public void testWithParallelism() throws Exception {
+		tEnv().executeSql("create table print_t (" +
+				"f0 int," +
+				"f1 double" +
+				") with (" +
+				"'connector' = 'print'," +
+				"'print-identifier' = 'test_print'," +
+				"'sink.parallelism' = '2'," +
+				"'standard-error'='false')");
+		DataType type = tEnv().from("print_t").getSchema().toRowDataType();
+		Row row = Row.of(1, 1.1);
+		tEnv().fromValues(type, Collections.singleton(row)).executeInsert("print_t").await();
+
+		String expectedLine1 = "test_print:1> +I(" +
+			/* 0 */ "1," +
+			/* 1 */ "1.1" +
+			")";
+		String expectedLine2 = "test_print:2> +I(" +
+			/* 0 */ "1," +
+			/* 1 */ "1.1" +
+			")";
+		Assert.assertTrue(arrayOutputStream.toString().equals(expectedLine1 + "\n") || arrayOutputStream.toString().equals(expectedLine2 + "\n"));
+	}
+
+	private void test(boolean standardError) throws Exception {
 		tEnv().executeSql(String.format("create table print_t (" +
 						"f0 int," +
 						"f1 double," +
@@ -114,7 +140,7 @@ public class PrintConnectorITCase extends StreamingTestBase {
 				/* 10 */  mapData,
 				/* 11 */  Row.of(1, "1")
 		);
-		execInsertTableAndWaitResult(tEnv().fromValues(type, Arrays.asList(row, row)), "print_t");
+		tEnv().fromValues(type, Arrays.asList(row, row)).executeInsert("print_t").await();
 
 		String expectedLine = "test_print> +I(" +
 				/* 0 */ "1," +

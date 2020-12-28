@@ -28,7 +28,6 @@ import org.apache.flink.runtime.checkpoint.StandaloneCheckpointRecoveryFactory;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.executiongraph.restart.FixedDelayRestartStrategy;
 import org.apache.flink.runtime.instance.SimpleSlotContext;
 import org.apache.flink.runtime.io.network.partition.NoOpJobMasterPartitionTracker;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
@@ -225,13 +224,13 @@ public class ExecutionVertexLocalityTest extends TestLogger {
 			getClass().getClassLoader(),
 			new StandaloneCheckpointRecoveryFactory(),
 			timeout,
-			new FixedDelayRestartStrategy(10, 0L),
 			new UnregisteredMetricsGroup(),
 			VoidBlobWriter.getInstance(),
 			timeout,
 			log,
 			NettyShuffleMaster.INSTANCE,
-			NoOpJobMasterPartitionTracker.INSTANCE);
+			NoOpJobMasterPartitionTracker.INSTANCE,
+			System.currentTimeMillis());
 	}
 
 	private void initializeLocation(ExecutionVertex vertex, TaskManagerLocation location) throws Exception {

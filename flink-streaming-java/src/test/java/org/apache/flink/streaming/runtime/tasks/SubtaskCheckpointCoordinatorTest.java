@@ -25,7 +25,7 @@ import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
-import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.CheckpointMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
@@ -35,7 +35,6 @@ import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.writer.NonRecordWriter;
 import org.apache.flink.runtime.io.network.api.writer.RecordOrEventCollectingResultPartitionWriter;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
-import org.apache.flink.runtime.io.network.util.TestPooledBufferProvider;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.DummyEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
@@ -105,8 +104,9 @@ public class SubtaskCheckpointCoordinatorTest {
 		MockWriter writer = new MockWriter();
 		SubtaskCheckpointCoordinator coordinator = coordinator(unalignedCheckpointEnabled, writer);
 		CheckpointStorageLocationReference locationReference = CheckpointStorageLocationReference.getDefault();
-		CheckpointOptions options = new CheckpointOptions(checkpointType, locationReference, true, unalignedCheckpointEnabled);
-		coordinator.initCheckpoint(1L, options);
+		coordinator.initCheckpoint(1L, unalignedCheckpointEnabled ?
+			CheckpointOptions.unaligned(locationReference) :
+			CheckpointOptions.alignedNoTimeout(checkpointType, locationReference));
 		return writer.started;
 	}
 
@@ -157,7 +157,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		coordinator.checkpointState(
 				new CheckpointMetaData(0, 0),
 				new CheckpointOptions(SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
-				new CheckpointMetrics(),
+				new CheckpointMetricsBuilder(),
 				operatorChain,
 				() -> false);
 
@@ -176,7 +176,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		coordinator.checkpointState(
 			new CheckpointMetaData(0, 0),
 			new CheckpointOptions(SAVEPOINT, CheckpointStorageLocationReference.getDefault()),
-			new CheckpointMetrics(),
+			new CheckpointMetricsBuilder(),
 			new OperatorChain<>(new NoOpStreamTask<>(new DummyEnvironment()), new NonRecordWriter<>()),
 			() -> false);
 	}
@@ -221,7 +221,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		subtaskCheckpointCoordinator.checkpointState(
 			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
 			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
+			new CheckpointMetricsBuilder(),
 			operatorChain,
 			() -> true);
 		assertFalse(checkpointOperator.isCheckpointed());
@@ -252,11 +252,10 @@ public class SubtaskCheckpointCoordinatorTest {
 			.setEnvironment(mockEnvironment)
 			.build();
 
-		TestPooledBufferProvider bufferProvider = new TestPooledBufferProvider(1, 4096);
 		ArrayList<Object> recordOrEvents = new ArrayList<>();
 		StreamElementSerializer<String> stringStreamElementSerializer = new StreamElementSerializer<>(StringSerializer.INSTANCE);
 		ResultPartitionWriter resultPartitionWriter = new RecordOrEventCollectingResultPartitionWriter<>(
-			recordOrEvents, bufferProvider, stringStreamElementSerializer);
+			recordOrEvents, stringStreamElementSerializer);
 		mockEnvironment.addOutputs(Collections.singletonList(resultPartitionWriter));
 
 		OneInputStreamTask<String, String> task = testHarness.getTask();
@@ -268,7 +267,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		subtaskCheckpointCoordinator.checkpointState(
 			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
 			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
+			new CheckpointMetricsBuilder(),
 			operatorChain,
 			() -> true);
 
@@ -318,7 +317,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		subtaskCheckpointCoordinator.checkpointState(
 			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
 			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
+			new CheckpointMetricsBuilder(),
 			operatorChain,
 			() -> true);
 		rawKeyedStateHandleFuture.awaitRun();
@@ -344,7 +343,7 @@ public class SubtaskCheckpointCoordinatorTest {
 		subtaskCheckpointCoordinator.checkpointState(
 			new CheckpointMetaData(checkpointId, System.currentTimeMillis()),
 			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			new CheckpointMetrics(),
+			new CheckpointMetricsBuilder(),
 			operatorChain,
 			() -> true);
 		subtaskCheckpointCoordinator.notifyCheckpointAborted(checkpointId, operatorChain, () -> true);

@@ -183,7 +183,7 @@ public interface TableEnvironment {
 	 * <pre>{@code
 	 *  root
 	 *  |-- id: DECIMAL(10, 2)
-	 *  |-- f1: STRING
+	 *  |-- name: STRING
 	 * }</pre>
 	 *
 	 * <p>For more examples see {@link #fromValues(Object...)}.
@@ -803,7 +803,7 @@ public interface TableEnvironment {
 	 *
 	 * @param statement The statement for which the AST and execution plan will be returned.
 	 * @param extraDetails The extra explain details which the explain result should include,
-	 *   e.g. estimated cost, changelog mode for streaming
+	 *   e.g. estimated cost, changelog mode for streaming, displaying execution plan in json format
 	 * @return AST and the execution plan.
 	 */
 	String explainSql(String statement, ExplainDetail... extraDetails);

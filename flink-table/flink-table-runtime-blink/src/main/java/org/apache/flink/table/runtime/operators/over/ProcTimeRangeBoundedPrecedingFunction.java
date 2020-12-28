@@ -28,8 +28,8 @@ import org.apache.flink.api.java.typeutils.ListTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
-import org.apache.flink.table.data.JoinedRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.table.runtime.dataview.PerKeyStateDataViewStore;
 import org.apache.flink.table.runtime.generated.AggsHandleFunction;
 import org.apache.flink.table.runtime.generated.GeneratedAggsHandleFunction;
@@ -124,7 +124,7 @@ public class ProcTimeRangeBoundedPrecedingFunction<K> extends KeyedProcessFuncti
 
 		// add current element to the window list of elements with corresponding timestamp
 		List<RowData> rowList = inputState.get(currentTime);
-		// null value means that this si the first event received for this timestamp
+		// null value means that this is the first event received for this timestamp
 		if (rowList == null) {
 			rowList = new ArrayList<RowData>();
 			// register timer to process event once the current millisecond passed

@@ -30,6 +30,7 @@ import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
+import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -66,11 +67,11 @@ import java.util.concurrent.CompletableFuture;
  *
  * <p>Implementations can expect that methods will not be invoked concurrently. In fact,
  * all invocations will originate from a thread in the {@link ComponentMainThreadExecutor}, which
- * will be passed via {@link #setMainThreadExecutor(ComponentMainThreadExecutor)}.
+ * will be passed via {@link #initialize(ComponentMainThreadExecutor)}.
  */
 public interface SchedulerNG {
 
-	void setMainThreadExecutor(ComponentMainThreadExecutor mainThreadExecutor);
+	void initialize(ComponentMainThreadExecutor mainThreadExecutor);
 
 	void registerJobStatusListener(JobStatusListener jobStatusListener);
 
@@ -84,13 +85,17 @@ public interface SchedulerNG {
 
 	void handleGlobalFailure(Throwable cause);
 
-	boolean updateTaskExecutionState(TaskExecutionState taskExecutionState);
+	default boolean updateTaskExecutionState(TaskExecutionState taskExecutionState) {
+		return updateTaskExecutionState(new TaskExecutionStateTransition(taskExecutionState));
+	}
+
+	boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionState);
 
 	SerializedInputSplit requestNextInputSplit(JobVertexID vertexID, ExecutionAttemptID executionAttempt) throws IOException;
 
 	ExecutionState requestPartitionState(IntermediateDataSetID intermediateResultId, ResultPartitionID resultPartitionId) throws PartitionProducerDisposedException;
 
-	void scheduleOrUpdateConsumers(ResultPartitionID partitionID);
+	void notifyPartitionDataAvailable(ResultPartitionID partitionID);
 
 	ArchivedExecutionGraph requestJob();
 

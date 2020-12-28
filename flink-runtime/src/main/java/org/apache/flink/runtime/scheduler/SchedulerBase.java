@@ -22,7 +22,6 @@ package org.apache.flink.runtime.scheduler;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
@@ -48,19 +47,13 @@ import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionDeploymentListener;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionGraphBuilder;
-import org.apache.flink.runtime.executiongraph.ExecutionGraphException;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionStateUpdateListener;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.IntermediateResult;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
-import org.apache.flink.runtime.executiongraph.failover.FailoverStrategy;
-import org.apache.flink.runtime.executiongraph.failover.FailoverStrategyLoader;
-import org.apache.flink.runtime.executiongraph.failover.NoOpFailoverStrategy;
+import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.executiongraph.failover.flip1.ResultPartitionAvailabilityChecker;
-import org.apache.flink.runtime.executiongraph.restart.RestartStrategy;
-import org.apache.flink.runtime.executiongraph.restart.RestartStrategyFactory;
-import org.apache.flink.runtime.executiongraph.restart.RestartStrategyResolving;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
@@ -98,9 +91,8 @@ import org.apache.flink.runtime.scheduler.strategy.SchedulingExecutionVertex;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingTopology;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.runtime.state.KeyGroupRange;
-import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
-import org.apache.flink.runtime.webmonitor.WebMonitorUtils;
+import org.apache.flink.runtime.util.IntArrayList;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.FlinkRuntimeException;
@@ -121,6 +113,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -144,7 +137,9 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private final SchedulingTopology schedulingTopology;
 
-	private final PreferredLocationsRetriever preferredLocationsRetriever;
+	protected final StateLocationRetriever stateLocationRetriever;
+
+	protected final InputsLocationsRetriever inputsLocationsRetriever;
 
 	private final BackPressureStatsTracker backPressureStatsTracker;
 
@@ -162,15 +157,11 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private final Time rpcTimeout;
 
-	private final RestartStrategy restartStrategy;
-
 	private final BlobWriter blobWriter;
 
 	private final JobManagerJobMetricGroup jobManagerJobMetricGroup;
 
 	private final Time slotRequestTimeout;
-
-	private final boolean legacyScheduling;
 
 	protected final ExecutionVertexVersioner executionVertexVersioner;
 
@@ -191,7 +182,6 @@ public abstract class SchedulerBase implements SchedulerNG {
 		final ClassLoader userCodeLoader,
 		final CheckpointRecoveryFactory checkpointRecoveryFactory,
 		final Time rpcTimeout,
-		final RestartStrategyFactory restartStrategyFactory,
 		final BlobWriter blobWriter,
 		final JobManagerJobMetricGroup jobManagerJobMetricGroup,
 		final Time slotRequestTimeout,
@@ -199,7 +189,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		final JobMasterPartitionTracker partitionTracker,
 		final ExecutionVertexVersioner executionVertexVersioner,
 		final ExecutionDeploymentTracker executionDeploymentTracker,
-		final boolean legacyScheduling) throws Exception {
+		long initializationTimestamp) throws Exception {
 
 		this.log = checkNotNull(log);
 		this.jobGraph = checkNotNull(jobGraph);
@@ -212,33 +202,18 @@ public abstract class SchedulerBase implements SchedulerNG {
 		this.checkpointRecoveryFactory = checkNotNull(checkpointRecoveryFactory);
 		this.rpcTimeout = checkNotNull(rpcTimeout);
 
-		final RestartStrategies.RestartStrategyConfiguration restartStrategyConfiguration =
-			jobGraph.getSerializedExecutionConfig()
-				.deserializeValue(userCodeLoader)
-				.getRestartStrategy();
-
-		this.restartStrategy = RestartStrategyResolving.resolve(restartStrategyConfiguration,
-			restartStrategyFactory,
-			jobGraph.isCheckpointingEnabled());
-
-		if (legacyScheduling) {
-			log.info("Using restart strategy {} for {} ({}).", this.restartStrategy, jobGraph.getName(), jobGraph.getJobID());
-		}
-
 		this.blobWriter = checkNotNull(blobWriter);
 		this.jobManagerJobMetricGroup = checkNotNull(jobManagerJobMetricGroup);
 		this.slotRequestTimeout = checkNotNull(slotRequestTimeout);
 		this.executionVertexVersioner = checkNotNull(executionVertexVersioner);
-		this.legacyScheduling = legacyScheduling;
 
-		this.executionGraph = createAndRestoreExecutionGraph(jobManagerJobMetricGroup, checkNotNull(shuffleMaster), checkNotNull(partitionTracker), checkNotNull(executionDeploymentTracker));
+		this.executionGraph = createAndRestoreExecutionGraph(jobManagerJobMetricGroup, checkNotNull(shuffleMaster), checkNotNull(partitionTracker), checkNotNull(executionDeploymentTracker), initializationTimestamp);
 
 		this.schedulingTopology = executionGraph.getSchedulingTopology();
 
-		final StateLocationRetriever stateLocationRetriever =
+		stateLocationRetriever =
 			executionVertexId -> getExecutionVertex(executionVertexId).getPreferredLocationBasedOnState();
-		final InputsLocationsRetriever inputsLocationsRetriever = new ExecutionGraphToInputsLocationsRetrieverAdapter(executionGraph);
-		this.preferredLocationsRetriever = new DefaultPreferredLocationsRetriever(stateLocationRetriever, inputsLocationsRetriever);
+		inputsLocationsRetriever = new ExecutionGraphToInputsLocationsRetrieverAdapter(executionGraph);
 
 		this.coordinatorMap = createCoordinatorMap();
 	}
@@ -247,17 +222,17 @@ public abstract class SchedulerBase implements SchedulerNG {
 		JobManagerJobMetricGroup currentJobManagerJobMetricGroup,
 		ShuffleMaster<?> shuffleMaster,
 		JobMasterPartitionTracker partitionTracker,
-		ExecutionDeploymentTracker executionDeploymentTracker) throws Exception {
+		ExecutionDeploymentTracker executionDeploymentTracker,
+		long initializationTimestamp) throws Exception {
 
-		ExecutionGraph newExecutionGraph = createExecutionGraph(currentJobManagerJobMetricGroup, shuffleMaster, partitionTracker, executionDeploymentTracker);
+		ExecutionGraph newExecutionGraph = createExecutionGraph(currentJobManagerJobMetricGroup, shuffleMaster, partitionTracker, executionDeploymentTracker, initializationTimestamp);
 
 		final CheckpointCoordinator checkpointCoordinator = newExecutionGraph.getCheckpointCoordinator();
 
 		if (checkpointCoordinator != null) {
 			// check whether we find a valid checkpoint
-			if (!checkpointCoordinator.restoreLatestCheckpointedStateToAll(
-				new HashSet<>(newExecutionGraph.getAllVertices().values()),
-				false)) {
+			if (!checkpointCoordinator.restoreInitialCheckpointIfPresent(
+					new HashSet<>(newExecutionGraph.getAllVertices().values()))) {
 
 				// check whether we can restore from a savepoint
 				tryRestoreExecutionGraphFromSavepoint(newExecutionGraph, jobGraph.getSavepointRestoreSettings());
@@ -271,7 +246,8 @@ public abstract class SchedulerBase implements SchedulerNG {
 		JobManagerJobMetricGroup currentJobManagerJobMetricGroup,
 		ShuffleMaster<?> shuffleMaster,
 		final JobMasterPartitionTracker partitionTracker,
-		ExecutionDeploymentTracker executionDeploymentTracker) throws JobExecutionException, JobException {
+		ExecutionDeploymentTracker executionDeploymentTracker,
+		long initializationTimestamp) throws JobExecutionException, JobException {
 
 		ExecutionDeploymentListener executionDeploymentListener = new ExecutionDeploymentTrackerDeploymentListenerAdapter(executionDeploymentTracker);
 		ExecutionStateUpdateListener executionStateUpdateListener = (execution, newState) -> {
@@ -279,10 +255,6 @@ public abstract class SchedulerBase implements SchedulerNG {
 				executionDeploymentTracker.stopTrackingDeploymentOf(execution);
 			}
 		};
-
-		final FailoverStrategy.Factory failoverStrategy = legacyScheduling ?
-			FailoverStrategyLoader.loadFailoverStrategy(jobMasterConfiguration, log) :
-			new NoOpFailoverStrategy.Factory();
 
 		return ExecutionGraphBuilder.buildGraph(
 			null,
@@ -294,16 +266,15 @@ public abstract class SchedulerBase implements SchedulerNG {
 			userCodeLoader,
 			checkpointRecoveryFactory,
 			rpcTimeout,
-			restartStrategy,
 			currentJobManagerJobMetricGroup,
 			blobWriter,
 			slotRequestTimeout,
 			log,
 			shuffleMaster,
 			partitionTracker,
-			failoverStrategy,
 			executionDeploymentListener,
-			executionStateUpdateListener);
+			executionStateUpdateListener,
+			initializationTimestamp);
 	}
 
 	/**
@@ -344,7 +315,17 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	protected void restoreState(final Set<ExecutionVertexID> vertices, final boolean isGlobalRecovery) throws Exception {
 		final CheckpointCoordinator checkpointCoordinator = executionGraph.getCheckpointCoordinator();
+
 		if (checkpointCoordinator == null) {
+			// batch failover case - we only need to notify the OperatorCoordinators,
+			// not do any actual state restore
+			if (isGlobalRecovery) {
+				notifyCoordinatorsOfEmptyGlobalRestore();
+			} else {
+				notifyCoordinatorsOfSubtaskRestore(
+					getInvolvedExecutionJobVerticesAndSubtasks(vertices),
+					OperatorCoordinator.NO_CHECKPOINT);
+			}
 			return;
 		}
 
@@ -356,11 +337,60 @@ public abstract class SchedulerBase implements SchedulerNG {
 		checkpointCoordinator.abortPendingCheckpoints(
 				new CheckpointException(CheckpointFailureReason.JOB_FAILOVER_REGION));
 
-		final Set<ExecutionJobVertex> jobVerticesToRestore = getInvolvedExecutionJobVertices(vertices);
 		if (isGlobalRecovery) {
+			final Set<ExecutionJobVertex> jobVerticesToRestore = getInvolvedExecutionJobVertices(vertices);
+
+			// a global restore restores all Job Vertices
+			assert jobVerticesToRestore.size() == getExecutionGraph().getAllVertices().size();
+
 			checkpointCoordinator.restoreLatestCheckpointedStateToAll(jobVerticesToRestore, true);
+
 		} else {
-			checkpointCoordinator.restoreLatestCheckpointedStateToSubtasks(jobVerticesToRestore);
+			final Map<ExecutionJobVertex, IntArrayList> subtasksToRestore =
+					getInvolvedExecutionJobVerticesAndSubtasks(vertices);
+
+			final OptionalLong restoredCheckpointId =
+					checkpointCoordinator.restoreLatestCheckpointedStateToSubtasks(subtasksToRestore.keySet());
+
+			// Ideally, the Checkpoint Coordinator would call OperatorCoordinator.resetSubtask, but
+			// the Checkpoint Coordinator is not aware of subtasks in a local failover. It always
+			// assigns state to all subtasks, and for the subtask execution attempts that are still
+			// running (or not waiting to be deployed) the state assignment has simply no effect.
+			// Because of that, we need to do the "subtask restored" notification here.
+			// Once the Checkpoint Coordinator is properly aware of partial (region) recovery,
+			// this code should move into the Checkpoint Coordinator.
+			final long checkpointId = restoredCheckpointId.orElse(OperatorCoordinator.NO_CHECKPOINT);
+			notifyCoordinatorsOfSubtaskRestore(subtasksToRestore, checkpointId);
+		}
+	}
+
+	private void notifyCoordinatorsOfSubtaskRestore(
+			final Map<ExecutionJobVertex, IntArrayList> restoredSubtasks,
+			final long checkpointId) {
+
+		for (final Map.Entry<ExecutionJobVertex, IntArrayList> vertexSubtasks : restoredSubtasks.entrySet()) {
+			final ExecutionJobVertex jobVertex = vertexSubtasks.getKey();
+			final IntArrayList subtasks = vertexSubtasks.getValue();
+
+			final Collection<OperatorCoordinatorHolder> coordinators = jobVertex.getOperatorCoordinators();
+			if (coordinators.isEmpty()) {
+				continue;
+			}
+
+			while (!subtasks.isEmpty()) {
+				final int subtask = subtasks.removeLast(); // this is how IntArrayList implements iterations
+				for (final OperatorCoordinatorHolder opCoordinator : coordinators) {
+					opCoordinator.subtaskReset(subtask, checkpointId);
+				}
+			}
+		}
+	}
+
+	private void notifyCoordinatorsOfEmptyGlobalRestore() throws Exception {
+		for (final ExecutionJobVertex ejv : getExecutionGraph().getAllVertices().values()) {
+			for (final OperatorCoordinator coordinator : ejv.getOperatorCoordinators()) {
+				coordinator.resetToCheckpoint(OperatorCoordinator.NO_CHECKPOINT, null);
+			}
 		}
 	}
 
@@ -373,6 +403,22 @@ public abstract class SchedulerBase implements SchedulerNG {
 			tasks.add(executionVertex.getJobVertex());
 		}
 		return tasks;
+	}
+
+	private Map<ExecutionJobVertex, IntArrayList> getInvolvedExecutionJobVerticesAndSubtasks(
+			final Set<ExecutionVertexID> executionVertices) {
+
+		final HashMap<ExecutionJobVertex, IntArrayList> result = new HashMap<>();
+
+		for (ExecutionVertexID executionVertexID : executionVertices) {
+			final ExecutionVertex executionVertex = getExecutionVertex(executionVertexID);
+			final IntArrayList subtasks = result.computeIfAbsent(
+					executionVertex.getJobVertex(),
+					(key) -> new IntArrayList(32));
+			subtasks.add(executionVertex.getParallelSubtaskIndex());
+		}
+
+		return result;
 	}
 
 	protected void transitionToScheduled(final List<ExecutionVertexID> verticesToDeploy) {
@@ -404,12 +450,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		return executionGraph.getResultPartitionAvailabilityChecker();
 	}
 
-	protected final PreferredLocationsRetriever getPreferredLocationsRetriever() {
-		return preferredLocationsRetriever;
-	}
-
-	protected final void prepareExecutionGraphForNgScheduling() {
-		executionGraph.enableNgScheduling(new UpdateSchedulerNgOnInternalFailuresListener(this, jobGraph.getJobID()));
+	protected final void transitionToRunning() {
 		executionGraph.transitionToRunning();
 	}
 
@@ -457,14 +498,26 @@ public abstract class SchedulerBase implements SchedulerNG {
 		return executionGraph.getCheckpointCoordinator();
 	}
 
+	/**
+	 * ExecutionGraph is exposed to make it easier to rework tests to be based on the new scheduler.
+	 * ExecutionGraph is expected to be used only for state check. Yet at the moment, before all the
+	 * actions are factored out from ExecutionGraph and its sub-components, some actions may still
+	 * be performed directly on it.
+	 */
+	@VisibleForTesting
+	public ExecutionGraph getExecutionGraph() {
+		return executionGraph;
+	}
+
 	// ------------------------------------------------------------------------
 	// SchedulerNG
 	// ------------------------------------------------------------------------
 
 	@Override
-	public void setMainThreadExecutor(final ComponentMainThreadExecutor mainThreadExecutor) {
+	public void initialize(final ComponentMainThreadExecutor mainThreadExecutor) {
 		this.mainThreadExecutor = checkNotNull(mainThreadExecutor);
 		initializeOperatorCoordinators(mainThreadExecutor);
+		executionGraph.setInternalTaskFailuresListener(new UpdateSchedulerNgOnInternalFailuresListener(this, jobGraph.getJobID()));
 		executionGraph.start(mainThreadExecutor);
 	}
 
@@ -511,7 +564,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 	}
 
 	@Override
-	public final boolean updateTaskExecutionState(final TaskExecutionState taskExecutionState) {
+	public final boolean updateTaskExecutionState(final TaskExecutionStateTransition taskExecutionState) {
 		final Optional<ExecutionVertexID> executionVertexId = getExecutionVertexId(taskExecutionState.getID());
 
 		boolean updateSuccess = executionGraph.updateState(taskExecutionState);
@@ -530,7 +583,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private boolean isNotifiable(
 			final ExecutionVertexID executionVertexId,
-			final TaskExecutionState taskExecutionState) {
+			final TaskExecutionStateTransition taskExecutionState) {
 
 		final ExecutionVertex executionVertex = getExecutionVertex(executionVertexId);
 
@@ -553,7 +606,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		return false;
 	}
 
-	protected void updateTaskExecutionStateInternal(final ExecutionVertexID executionVertexId, final TaskExecutionState taskExecutionState) {
+	protected void updateTaskExecutionStateInternal(final ExecutionVertexID executionVertexId, final TaskExecutionStateTransition taskExecutionState) {
 	}
 
 	@Override
@@ -632,19 +685,15 @@ public abstract class SchedulerBase implements SchedulerNG {
 	}
 
 	@Override
-	public final void scheduleOrUpdateConsumers(final ResultPartitionID partitionId) {
+	public final void notifyPartitionDataAvailable(final ResultPartitionID partitionId) {
 		mainThreadExecutor.assertRunningInMainThread();
 
-		try {
-			executionGraph.scheduleOrUpdateConsumers(partitionId);
-		} catch (ExecutionGraphException e) {
-			throw new RuntimeException(e);
-		}
+		executionGraph.notifyPartitionDataAvailable(partitionId);
 
-		scheduleOrUpdateConsumersInternal(partitionId.getPartitionId());
+		notifyPartitionDataAvailableInternal(partitionId.getPartitionId());
 	}
 
-	protected void scheduleOrUpdateConsumersInternal(IntermediateResultPartitionID resultPartitionId) {
+	protected void notifyPartitionDataAvailableInternal(IntermediateResultPartitionID resultPartitionId) {
 	}
 
 	@Override
@@ -661,7 +710,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 	@Override
 	public JobDetails requestJobDetails() {
 		mainThreadExecutor.assertRunningInMainThread();
-		return WebMonitorUtils.createDetailsForJob(executionGraph);
+		return JobDetails.createDetailsForJob(executionGraph);
 	}
 
 	@Override

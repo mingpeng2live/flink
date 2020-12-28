@@ -21,12 +21,13 @@ package org.apache.flink.connector.jdbc.table;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
+import org.apache.flink.connector.jdbc.internal.GenericJdbcSinkFunction;
 import org.apache.flink.connector.jdbc.internal.options.JdbcDmlOptions;
 import org.apache.flink.connector.jdbc.internal.options.JdbcOptions;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.sink.OutputFormatProvider;
+import org.apache.flink.table.connector.sink.SinkFunctionProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
 
@@ -74,10 +75,9 @@ public class JdbcDynamicTableSink implements DynamicTableSink {
 	}
 
 	@Override
-	@SuppressWarnings("unchecked")
 	public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-		final TypeInformation<RowData> rowDataTypeInformation = (TypeInformation<RowData>) context
-			.createTypeInformation(tableSchema.toRowDataType());
+		final TypeInformation<RowData> rowDataTypeInformation =
+				context.createTypeInformation(tableSchema.toRowDataType());
 		final JdbcDynamicOutputFormatBuilder builder = new JdbcDynamicOutputFormatBuilder();
 
 		builder.setJdbcOptions(jdbcOptions);
@@ -85,7 +85,7 @@ public class JdbcDynamicTableSink implements DynamicTableSink {
 		builder.setJdbcExecutionOptions(executionOptions);
 		builder.setRowDataTypeInfo(rowDataTypeInformation);
 		builder.setFieldDataTypes(tableSchema.getFieldDataTypes());
-		return OutputFormatProvider.of(builder.build());
+		return SinkFunctionProvider.of(new GenericJdbcSinkFunction<>(builder.build()), jdbcOptions.getParallelism());
 	}
 
 	@Override

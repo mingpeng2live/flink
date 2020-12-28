@@ -21,13 +21,19 @@ package org.apache.flink.runtime.executiongraph;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
+import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutorService;
 import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.executiongraph.failover.flip1.FixedDelayRestartBackoffTimeStrategy;
+import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
+import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
+import org.apache.flink.runtime.jobgraph.ScheduleMode;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationConstraint;
 import org.apache.flink.runtime.jobmanager.scheduler.SchedulerTestBase;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
-import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
+import org.apache.flink.runtime.scheduler.SchedulerBase;
+import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
 import org.apache.flink.util.FlinkException;
 
 import org.junit.Test;
@@ -41,8 +47,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
 /**
- * Additional {@link ExecutionGraph} restart tests {@link ExecutionGraphRestartTest} which
- * require the usage of a {@link SlotProvider}.
+ * Tests that co-location constraints work as expected in the case of task restarts.
  */
 public class ExecutionGraphCoLocationRestartTest extends SchedulerTestBase {
 
@@ -63,26 +68,33 @@ public class ExecutionGraphCoLocationRestartTest extends SchedulerTestBase {
 
 		JobVertex groupVertex = ExecutionGraphTestUtils.createNoOpVertex(NUM_TASKS);
 		JobVertex groupVertex2 = ExecutionGraphTestUtils.createNoOpVertex(NUM_TASKS);
+		groupVertex2.connectNewDataSetAsInput(groupVertex, DistributionPattern.POINTWISE, ResultPartitionType.PIPELINED);
 
 		SlotSharingGroup sharingGroup = new SlotSharingGroup();
 		groupVertex.setSlotSharingGroup(sharingGroup);
 		groupVertex2.setSlotSharingGroup(sharingGroup);
 		groupVertex.setStrictlyCoLocatedWith(groupVertex2);
 
-		//initiate and schedule job
-		final ExecutionGraph eg = TestingExecutionGraphBuilder
-			.newBuilder()
-			.setJobGraph(new JobGraph(groupVertex, groupVertex2))
-			.setSlotProvider(testingSlotProvider)
-			.setRestartStrategy(new TestRestartStrategy(1, false))
+		// initiate and schedule job
+		final JobGraph jobGraph = new JobGraph(groupVertex, groupVertex2);
+		jobGraph.setScheduleMode(ScheduleMode.EAGER);
+
+		final ManuallyTriggeredScheduledExecutorService delayExecutor = new ManuallyTriggeredScheduledExecutorService();
+		final SchedulerBase scheduler = SchedulerTestingUtils
+			.newSchedulerBuilderWithDefaultSlotAllocator(jobGraph, testingSlotProvider)
+			.setDelayExecutor(delayExecutor)
+			.setRestartBackoffTimeStrategy(
+				new FixedDelayRestartBackoffTimeStrategy.FixedDelayRestartBackoffTimeStrategyFactory(1, 0).create())
 			.build();
 
+		final ExecutionGraph eg = scheduler.getExecutionGraph();
+
 		// enable the queued scheduling for the slot pool
-		eg.start(ComponentMainThreadExecutorServiceAdapter.forMainThread());
+		scheduler.initialize(ComponentMainThreadExecutorServiceAdapter.forMainThread());
 
 		assertEquals(JobStatus.CREATED, eg.getState());
 
-		eg.scheduleForExecution();
+		scheduler.startScheduling();
 
 		Predicate<AccessExecution> isDeploying = ExecutionGraphTestUtils.isInExecutionState(ExecutionState.DEPLOYING);
 		ExecutionGraphTestUtils.waitForAllExecutionsPredicate(
@@ -97,10 +109,16 @@ public class ExecutionGraphCoLocationRestartTest extends SchedulerTestBase {
 
 		eg.getAllExecutionVertices().iterator().next().fail(new FlinkException("Test exception"));
 
-		assertEquals(JobStatus.FAILING, eg.getState());
+		assertEquals(JobStatus.RESTARTING, eg.getState());
+
+		// trigger registration of restartTasks(...) callback to cancelFuture before completing the
+		// cancellation. This ensures the restarting actions to be performed in main thread.
+		delayExecutor.triggerNonPeriodicScheduledTask();
 
 		for (ExecutionVertex vertex : eg.getAllExecutionVertices()) {
-			vertex.getCurrentExecutionAttempt().completeCancelling();
+			if (vertex.getExecutionState() == ExecutionState.CANCELING) {
+				vertex.getCurrentExecutionAttempt().completeCancelling();
+			}
 		}
 
 		// wait until we have restarted

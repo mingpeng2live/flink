@@ -127,8 +127,10 @@ class AkkaRpcActor<T extends RpcEndpoint & RpcGateway> extends AbstractActor {
 		super.postStop();
 
 		if (rpcEndpointTerminationResult.isSuccess()) {
+			log.debug("The RpcEndpoint {} terminated successfully.", rpcEndpoint.getEndpointId());
 			terminationFuture.complete(null);
 		} else {
+			log.info("The RpcEndpoint {} failed.", rpcEndpoint.getEndpointId(), rpcEndpointTerminationResult.getFailureCause());
 			terminationFuture.completeExceptionally(rpcEndpointTerminationResult.getFailureCause());
 		}
 
@@ -326,7 +328,7 @@ class AkkaRpcActor<T extends RpcEndpoint & RpcGateway> extends AbstractActor {
 		final ActorRef sender = getSender();
 		Promise.DefaultPromise<Object> promise = new Promise.DefaultPromise<>();
 
-		asyncResponse.whenComplete(
+		FutureUtils.assertNoException(asyncResponse.handle(
 			(value, throwable) -> {
 				if (throwable != null) {
 					promise.failure(throwable);
@@ -340,10 +342,13 @@ class AkkaRpcActor<T extends RpcEndpoint & RpcGateway> extends AbstractActor {
 							promise.failure(serializedResult.right());
 						}
 					} else {
-						promise.success(value);
+						promise.success(new Status.Success(value));
 					}
 				}
-			});
+
+				// consume the provided throwable
+				return null;
+			}));
 
 		Patterns.pipe(promise.future(), getContext().dispatcher()).to(sender);
 	}
@@ -356,7 +361,7 @@ class AkkaRpcActor<T extends RpcEndpoint & RpcGateway> extends AbstractActor {
 		try {
 			SerializedValue<?> serializedResult = new SerializedValue<>(result);
 
-			long resultSize = serializedResult.getByteArray().length;
+			long resultSize = serializedResult.getByteArray() == null ? 0 : serializedResult.getByteArray().length;
 			if (resultSize > maximumFramesize) {
 				return Either.Right(new AkkaRpcException(
 					"The method " + methodName + "'s result size " + resultSize

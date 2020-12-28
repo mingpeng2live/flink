@@ -21,9 +21,11 @@ package org.apache.flink.streaming.runtime.tasks;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.metrics.MetricNames;
+import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.runtime.util.FatalExitExceptionHandler;
 import org.apache.flink.streaming.api.checkpoint.ExternallyInducedSource;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
@@ -79,7 +81,7 @@ public class SourceStreamTask<OUT, SRC extends SourceFunction<OUT>, OP extends S
 	protected void init() {
 		// we check if the source is actually inducing the checkpoints, rather
 		// than the trigger
-		SourceFunction<?> source = headOperator.getUserFunction();
+		SourceFunction<?> source = mainOperator.getUserFunction();
 		if (source instanceof ExternallyInducedSource) {
 			externallyInducedCheckpoints = true;
 
@@ -90,8 +92,12 @@ public class SourceStreamTask<OUT, SRC extends SourceFunction<OUT>, OP extends S
 					// TODO - we need to see how to derive those. We should probably not encode this in the
 					// TODO -   source's trigger message, but do a handshake in this task between the trigger
 					// TODO -   message from the master, and the source's trigger notification
-					final CheckpointOptions checkpointOptions = CheckpointOptions.forCheckpointWithDefaultLocation(
-						configuration.isExactlyOnceCheckpointMode(), configuration.isUnalignedCheckpointsEnabled());
+					final CheckpointOptions checkpointOptions = CheckpointOptions.forConfig(
+						CheckpointType.CHECKPOINT,
+						CheckpointStorageLocationReference.getDefault(),
+						configuration.isExactlyOnceCheckpointMode(),
+						configuration.isUnalignedCheckpointsEnabled(),
+						configuration.getAlignmentTimeout());
 					final long timestamp = System.currentTimeMillis();
 
 					final CheckpointMetaData checkpointMetaData = new CheckpointMetaData(checkpointId, timestamp);
@@ -116,7 +122,7 @@ public class SourceStreamTask<OUT, SRC extends SourceFunction<OUT>, OP extends S
 
 	@Override
 	protected void advanceToEndOfEventTime() throws Exception {
-		headOperator.advanceToEndOfEventTime();
+		mainOperator.advanceToEndOfEventTime();
 	}
 
 	@Override
@@ -147,8 +153,8 @@ public class SourceStreamTask<OUT, SRC extends SourceFunction<OUT>, OP extends S
 	@Override
 	protected void cancelTask() {
 		try {
-			if (headOperator != null) {
-				headOperator.cancel();
+			if (mainOperator != null) {
+				mainOperator.cancel();
 			}
 		}
 		finally {
@@ -210,7 +216,7 @@ public class SourceStreamTask<OUT, SRC extends SourceFunction<OUT>, OP extends S
 		@Override
 		public void run() {
 			try {
-				headOperator.run(lock, getStreamStatusMaintainer(), operatorChain);
+				mainOperator.run(lock, getStreamStatusMaintainer(), operatorChain);
 				completionFuture.complete(null);
 			} catch (Throwable t) {
 				// Note, t can be also an InterruptedException

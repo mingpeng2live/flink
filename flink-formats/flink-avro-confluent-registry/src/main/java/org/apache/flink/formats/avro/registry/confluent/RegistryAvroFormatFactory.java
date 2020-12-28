@@ -73,7 +73,7 @@ public class RegistryAvroFormatFactory implements
 					DataType producedDataType) {
 				final RowType rowType = (RowType) producedDataType.getLogicalType();
 				final TypeInformation<RowData> rowDataTypeInfo =
-						(TypeInformation<RowData>) context.createTypeInformation(producedDataType);
+						context.createTypeInformation(producedDataType);
 				return new AvroRowDataDeserializationSchema(
 						ConfluentRegistryAvroDeserializationSchema.forGeneric(
 								AvroSchemaConverter.convertToSchema(rowType),
@@ -114,7 +114,7 @@ public class RegistryAvroFormatFactory implements
 								subject.get(),
 								AvroSchemaConverter.convertToSchema(rowType),
 								schemaRegistryURL),
-						RowDataToAvroConverters.createRowConverter(rowType));
+						RowDataToAvroConverters.createConverter(rowType));
 			}
 
 			@Override

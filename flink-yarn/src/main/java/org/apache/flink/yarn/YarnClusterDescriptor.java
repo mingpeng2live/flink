@@ -53,6 +53,7 @@ import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ShutdownHookUtil;
+import org.apache.flink.util.StringUtils;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.configuration.YarnConfigOptionsInternal;
 import org.apache.flink.yarn.configuration.YarnDeploymentTarget;
@@ -61,6 +62,7 @@ import org.apache.flink.yarn.entrypoint.YarnApplicationClusterEntryPoint;
 import org.apache.flink.yarn.entrypoint.YarnJobClusterEntrypoint;
 import org.apache.flink.yarn.entrypoint.YarnSessionClusterEntrypoint;
 
+import org.apache.commons.collections.ListUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -173,7 +175,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		this.userJarInclusion = getUserJarInclusionMode(flinkConfiguration);
 
 		getLocalFlinkDistPath(flinkConfiguration).ifPresent(this::setLocalJarPath);
-		decodeFilesToShipToCluster(flinkConfiguration, YarnConfigOptions.SHIP_DIRECTORIES).ifPresent(this::addShipFiles);
+		decodeFilesToShipToCluster(flinkConfiguration, YarnConfigOptions.SHIP_FILES).ifPresent(this::addShipFiles);
 		decodeFilesToShipToCluster(flinkConfiguration, YarnConfigOptions.SHIP_ARCHIVES).ifPresent(this::addShipArchives);
 
 		this.yarnQueue = flinkConfiguration.getString(YarnConfigOptions.APPLICATION_QUEUE);
@@ -468,9 +470,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 				final Path applicationDir = YarnApplicationFileUploader
 						.getApplicationDirPath(getStagingDir(fs), applicationId);
 
-				Utils.deleteApplicationFiles(Collections.singletonMap(
-						YarnConfigKeys.FLINK_YARN_FILES,
-						applicationDir.toUri().toString()));
+				Utils.deleteApplicationFiles(applicationDir.toUri().toString());
 			}
 
 		} catch (YarnException | IOException e) {
@@ -705,7 +705,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
 		ApplicationSubmissionContext appContext = yarnApplication.getApplicationSubmissionContext();
 
-		final List<Path> providedLibDirs = getRemoteSharedPaths(configuration);
+		final List<Path> providedLibDirs = Utils.getQualifiedRemoteSharedPaths(configuration, yarnConfiguration);
 
 		final YarnApplicationFileUploader fileUploader = YarnApplicationFileUploader.from(
 			fs,
@@ -907,9 +907,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		//In Integration test setup, the Yarn containers created by YarnMiniCluster does not have the Yarn site XML
 		//and KRB5 configuration files. We are adding these files as container local resources for the container
 		//applications (JM/TMs) to have proper secure cluster setup
-		Path remoteKrb5Path = null;
 		Path remoteYarnSiteXmlPath = null;
-		boolean hasKrb5 = false;
 		if (System.getenv("IN_TESTS") != null) {
 			File f = new File(System.getenv("YARN_CONF_DIR"), Utils.YARN_SITE_FILE_NAME);
 			LOG.info("Adding Yarn configuration {} to the AM container local resource bucket", f.getAbsolutePath());
@@ -921,21 +919,26 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 				LocalResourceType.FILE,
 				false,
 				false).getPath();
+			if (System.getProperty("java.security.krb5.conf") != null) {
+				configuration.set(SecurityOptions.KERBEROS_KRB5_PATH, System.getProperty("java.security.krb5.conf"));
+			}
+		}
 
-			String krb5Config = System.getProperty("java.security.krb5.conf");
-			if (krb5Config != null && krb5Config.length() != 0) {
-				File krb5 = new File(krb5Config);
-				LOG.info("Adding KRB5 configuration {} to the AM container local resource bucket", krb5.getAbsolutePath());
-				Path krb5ConfPath = new Path(krb5.getAbsolutePath());
-				remoteKrb5Path = fileUploader.registerSingleLocalResource(
+		Path remoteKrb5Path = null;
+		boolean hasKrb5 = false;
+		String krb5Config = configuration.get(SecurityOptions.KERBEROS_KRB5_PATH);
+		if (!StringUtils.isNullOrWhitespaceOnly(krb5Config)) {
+			final File krb5 = new File(krb5Config);
+			LOG.info("Adding KRB5 configuration {} to the AM container local resource bucket", krb5.getAbsolutePath());
+			final Path krb5ConfPath = new Path(krb5.getAbsolutePath());
+			remoteKrb5Path = fileUploader.registerSingleLocalResource(
 					Utils.KRB5_FILE_NAME,
 					krb5ConfPath,
 					"",
 					LocalResourceType.FILE,
 					false,
 					false).getPath();
-				hasKrb5 = true;
-			}
+			hasKrb5 = true;
 		}
 
 		Path remotePathKeytab = null;
@@ -972,7 +975,10 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		if (UserGroupInformation.isSecurityEnabled()) {
 			// set HDFS delegation tokens when security is enabled
 			LOG.info("Adding delegation token to the AM container.");
-			Utils.setTokensFor(amContainer, fileUploader.getRemotePaths(), yarnConfiguration);
+			List<Path> yarnAccessList = ConfigUtils.decodeListFromConfig(configuration, YarnConfigOptions.YARN_ACCESS, Path::new);
+			Utils.setTokensFor(amContainer,
+				ListUtils.union(yarnAccessList, fileUploader.getRemotePaths()), yarnConfiguration
+			);
 		}
 
 		amContainer.setLocalResources(fileUploader.getRegisteredLocalResources());
@@ -1113,20 +1119,6 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		return fileReplication > 0 ? fileReplication : yarnFileReplication;
 	}
 
-	private List<Path> getRemoteSharedPaths(Configuration configuration) throws IOException, FlinkException {
-		final List<Path> providedLibDirs = ConfigUtils.decodeListFromConfig(
-			configuration, YarnConfigOptions.PROVIDED_LIB_DIRS, Path::new);
-
-		for (Path path : providedLibDirs) {
-			if (!Utils.isRemotePath(path.toString())) {
-				throw new FlinkException(
-						"The \"" + YarnConfigOptions.PROVIDED_LIB_DIRS.key() + "\" should only contain" +
-								" dirs accessible from all worker nodes, while the \"" + path + "\" is local.");
-			}
-		}
-		return providedLibDirs;
-	}
-
 	private static String encodeYarnLocalResourceDescriptorListToString(List<YarnLocalResourceDescriptor> resources) {
 		return String.join(
 			LOCAL_RESOURCE_DESCRIPTOR_SEPARATOR,
@@ -1147,7 +1139,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			yarnClient.killApplication(yarnApplication.getNewApplicationResponse().getApplicationId());
 		} catch (Exception e) {
 			// we only log a debug message here because the "killApplication" call is a best-effort
-			// call (we don't know if the application has been deployed when the error occured).
+			// call (we don't know if the application has been deployed when the error occurred).
 			LOG.debug("Error while killing YARN application", e);
 		}
 	}
@@ -1494,7 +1486,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		if (flinkConfiguration.getString(CoreOptions.FLINK_JM_JVM_OPTIONS).length() > 0) {
 			javaOpts += " " + flinkConfiguration.getString(CoreOptions.FLINK_JM_JVM_OPTIONS);
 		}
-		//applicable only for YarnMiniCluster secure test run
+
 		//krb5.conf file will be available as local resource in JM/TM container
 		if (hasKrb5) {
 			javaOpts += " -Djava.security.krb5.conf=krb5.conf";
@@ -1516,7 +1508,8 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		startCommandValues.put("redirects",
 			"1> " + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/jobmanager.out " +
 			"2> " + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/jobmanager.err");
-		startCommandValues.put("args", "");
+		String dynamicParameterListStr = JobManagerProcessUtils.generateDynamicConfigsStr(processSpec);
+		startCommandValues.put("args", dynamicParameterListStr);
 
 		final String commandTemplate = flinkConfiguration
 				.getString(ConfigConstants.YARN_CONTAINER_START_COMMAND_TEMPLATE,

@@ -124,6 +124,17 @@ public class CoreOptions {
 		return parseParentFirstLoaderPatterns(base, append);
 	}
 
+	@Documentation.Section(Documentation.Sections.EXPERT_CLASS_LOADING)
+	public static final ConfigOption<Boolean> CHECK_LEAKED_CLASSLOADER = ConfigOptions
+		.key("classloader.check-leaked-classloader")
+		.booleanType()
+		.defaultValue(true)
+		.withDescription("Fails attempts at loading classes if the user classloader of a job is used after it has " +
+			"terminated.\n" +
+			"This is usually caused by the classloader being leaked by lingering threads or misbehaving libraries, " +
+			"which may also result in the classloader being used by other jobs.\n" +
+			"This check should only be disabled if such a leak prevents further jobs from running.");
+
 	/**
 	 * Plugin-specific option of {@link #ALWAYS_PARENT_FIRST_LOADER_PATTERNS}. Plugins use this parent first list
 	 * instead of the global version.
@@ -206,6 +217,16 @@ public class CoreOptions {
 		.noDefaultValue()
 		.withDescription("Defines the directory where the Flink logs are saved. It has to be an absolute path." +
 			" (Defaults to the log directory under Flink’s home)");
+
+	/**
+	 * The config parameter defining the directory for Flink PID file.
+	 * see: {@code bin/config.sh#KEY_ENV_PID_DIR} and {@code bin/config.sh#DEFAULT_ENV_PID_DIR}
+	 */
+	public static final ConfigOption<String> FLINK_PID_DIR = ConfigOptions
+		.key("env.pid.dir")
+		.defaultValue("/tmp")
+		.withDescription(
+			"Defines the directory where the flink-<host>-<process>.pid files are saved.");
 
 	/**
 	 * This options is here only for documentation generation, it is only

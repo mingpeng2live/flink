@@ -24,20 +24,25 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
+import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.executiongraph.failover.flip1.ExecutionFailureHandler;
 import org.apache.flink.runtime.executiongraph.failover.flip1.FailoverStrategy;
 import org.apache.flink.runtime.executiongraph.failover.flip1.FailureHandlingResult;
 import org.apache.flink.runtime.executiongraph.failover.flip1.RestartBackoffTimeStrategy;
-import org.apache.flink.runtime.executiongraph.restart.ThrowingRestartStrategy;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroupDesc;
 import org.apache.flink.runtime.jobmanager.scheduler.NoResourceAvailableException;
+import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.jobmaster.ExecutionDeploymentTracker;
 import org.apache.flink.runtime.jobmaster.LogicalSlot;
 import org.apache.flink.runtime.jobmaster.slotpool.ThrowingSlotProvider;
@@ -47,8 +52,9 @@ import org.apache.flink.runtime.rest.handler.legacy.backpressure.BackPressureSta
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingStrategy;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingStrategyFactory;
+import org.apache.flink.runtime.scheduler.strategy.SchedulingTopology;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
-import org.apache.flink.runtime.taskmanager.TaskExecutionState;
+import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.slf4j.Logger;
@@ -60,6 +66,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -68,6 +75,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -95,12 +103,15 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 
 	private final Set<ExecutionVertexID> verticesWaitingForRestart;
 
+	private final Consumer<ComponentMainThreadExecutor> startUpAction;
+
 	DefaultScheduler(
 		final Logger log,
 		final JobGraph jobGraph,
 		final BackPressureStatsTracker backPressureStatsTracker,
 		final Executor ioExecutor,
 		final Configuration jobMasterConfiguration,
+		final Consumer<ComponentMainThreadExecutor> startUpAction,
 		final ScheduledExecutorService futureExecutor,
 		final ScheduledExecutor delayExecutor,
 		final ClassLoader userCodeLoader,
@@ -116,7 +127,8 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 		final ExecutionVertexOperations executionVertexOperations,
 		final ExecutionVertexVersioner executionVertexVersioner,
 		final ExecutionSlotAllocatorFactory executionSlotAllocatorFactory,
-		final ExecutionDeploymentTracker executionDeploymentTracker) throws Exception {
+		final ExecutionDeploymentTracker executionDeploymentTracker,
+		long initializationTimestamp) throws Exception {
 
 		super(
 			log,
@@ -129,7 +141,6 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 			userCodeLoader,
 			checkpointRecoveryFactory,
 			rpcTimeout,
-			new ThrowingRestartStrategy.ThrowingRestartStrategyFactory(),
 			blobWriter,
 			jobManagerJobMetricGroup,
 			Time.seconds(0), // this is not used any more in the new scheduler
@@ -137,7 +148,7 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 			partitionTracker,
 			executionVertexVersioner,
 			executionDeploymentTracker,
-			false);
+			initializationTimestamp);
 
 		this.log = log;
 
@@ -155,14 +166,23 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 			failoverStrategy,
 			restartBackoffTimeStrategy);
 		this.schedulingStrategy = schedulingStrategyFactory.createInstance(this, getSchedulingTopology());
-		this.executionSlotAllocator = checkNotNull(executionSlotAllocatorFactory).createInstance(getPreferredLocationsRetriever());
+
+		this.executionSlotAllocator = checkNotNull(executionSlotAllocatorFactory)
+			.createInstance(new DefaultExecutionSlotAllocationContext());
 
 		this.verticesWaitingForRestart = new HashSet<>();
+		this.startUpAction = startUpAction;
 	}
 
 	// ------------------------------------------------------------------------
 	// SchedulerNG
 	// ------------------------------------------------------------------------
+
+	@Override
+	public void initialize(ComponentMainThreadExecutor mainThreadExecutor) {
+		super.initialize(mainThreadExecutor);
+		startUpAction.accept(mainThreadExecutor);
+	}
 
 	@Override
 	protected long getNumberOfRestarts() {
@@ -172,17 +192,23 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 	@Override
 	protected void startSchedulingInternal() {
 		log.info("Starting scheduling with scheduling strategy [{}]", schedulingStrategy.getClass().getName());
-		prepareExecutionGraphForNgScheduling();
+		transitionToRunning();
 		schedulingStrategy.startScheduling();
 	}
 
 	@Override
-	protected void updateTaskExecutionStateInternal(final ExecutionVertexID executionVertexId, final TaskExecutionState taskExecutionState) {
+	protected void updateTaskExecutionStateInternal(
+			final ExecutionVertexID executionVertexId,
+			final TaskExecutionStateTransition taskExecutionState) {
+
 		schedulingStrategy.onExecutionStateChange(executionVertexId, taskExecutionState.getExecutionState());
 		maybeHandleTaskFailure(taskExecutionState, executionVertexId);
 	}
 
-	private void maybeHandleTaskFailure(final TaskExecutionState taskExecutionState, final ExecutionVertexID executionVertexId) {
+	private void maybeHandleTaskFailure(
+			final TaskExecutionStateTransition taskExecutionState,
+			final ExecutionVertexID executionVertexId) {
+
 		if (taskExecutionState.getExecutionState() == ExecutionState.FAILED) {
 			final Throwable error = taskExecutionState.getError(userCodeLoader);
 			handleTaskFailure(executionVertexId, error);
@@ -287,7 +313,7 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 	}
 
 	@Override
-	protected void scheduleOrUpdateConsumersInternal(final IntermediateResultPartitionID partitionId) {
+	protected void notifyPartitionDataAvailableInternal(final IntermediateResultPartitionID partitionId) {
 		schedulingStrategy.onPartitionConsumable(partitionId);
 	}
 
@@ -416,10 +442,12 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 
 			if (throwable == null) {
 				final ExecutionVertex executionVertex = getExecutionVertex(executionVertexId);
-				final boolean sendScheduleOrUpdateConsumerMessage = deploymentHandle.getDeploymentOption().sendScheduleOrUpdateConsumerMessage();
+				final boolean notifyPartitionDataAvailable = deploymentHandle
+					.getDeploymentOption()
+					.notifyPartitionDataAvailable();
 				executionVertex
 					.getCurrentExecutionAttempt()
-					.registerProducedPartitions(logicalSlot.getTaskManagerLocation(), sendScheduleOrUpdateConsumerMessage);
+					.registerProducedPartitions(logicalSlot.getTaskManagerLocation(), notifyPartitionDataAvailable);
 				executionVertex.tryAssignResource(logicalSlot);
 			} else {
 				handleTaskDeploymentFailure(executionVertexId, maybeWrapWithNoResourceAvailableException(throwable));
@@ -491,6 +519,51 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 
 		for (OperatorCoordinator coordinator : vertex.getJobVertex().getOperatorCoordinators()) {
 			coordinator.subtaskFailed(vertex.getParallelSubtaskIndex(), null);
+		}
+	}
+
+	private class DefaultExecutionSlotAllocationContext implements ExecutionSlotAllocationContext {
+
+		@Override
+		public ResourceProfile getResourceProfile(final ExecutionVertexID executionVertexId) {
+			return getExecutionVertex(executionVertexId).getResourceProfile();
+		}
+
+		@Override
+		public AllocationID getPriorAllocationId(final ExecutionVertexID executionVertexId) {
+			return getExecutionVertex(executionVertexId).getLatestPriorAllocation();
+		}
+
+		@Override
+		public SchedulingTopology getSchedulingTopology() {
+			return DefaultScheduler.this.getSchedulingTopology();
+		}
+
+		@Override
+		public Set<SlotSharingGroup> getLogicalSlotSharingGroups() {
+			return getJobGraph().getSlotSharingGroups();
+		}
+
+		@Override
+		public Set<CoLocationGroupDesc> getCoLocationGroups() {
+			return getJobGraph().getCoLocationGroupDescriptors();
+		}
+
+		@Override
+		public Collection<Collection<ExecutionVertexID>> getConsumedResultPartitionsProducers(
+				ExecutionVertexID executionVertexId) {
+			return inputsLocationsRetriever.getConsumedResultPartitionsProducers(executionVertexId);
+		}
+
+		@Override
+		public Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(
+				ExecutionVertexID executionVertexId) {
+			return inputsLocationsRetriever.getTaskManagerLocation(executionVertexId);
+		}
+
+		@Override
+		public Optional<TaskManagerLocation> getStateLocation(ExecutionVertexID executionVertexId) {
+			return stateLocationRetriever.getStateLocation(executionVertexId);
 		}
 	}
 }

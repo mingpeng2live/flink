@@ -139,7 +139,10 @@ public class RegistryAvroRowDataSeDeSchemaTest {
 		RowType rowType = (RowType) dataType.getLogicalType();
 
 		AvroRowDataSerializationSchema serializer = getSerializationSchema(rowType, schema);
-		AvroRowDataDeserializationSchema deserializer = getDeserializationSchema(rowType, schema);
+		Schema writeSchema = AvroSchemaConverter
+			.convertToSchema(dataType.getLogicalType());
+		AvroRowDataDeserializationSchema deserializer =
+				getDeserializationSchema(rowType, writeSchema);
 
 		serializer.open(null);
 		deserializer.open(null);
@@ -148,7 +151,7 @@ public class RegistryAvroRowDataSeDeSchemaTest {
 		byte[] serialized = serializer.serialize(oriData);
 		RowData rowData = deserializer.deserialize(serialized);
 		assertThat(rowData.getArity(), equalTo(schema.getFields().size()));
-		assertEquals(address.getNum(), Integer.valueOf(rowData.getInt(0)));
+		assertEquals(address.getNum(), rowData.getInt(0));
 		assertEquals(address.getStreet(), rowData.getString(1).toString());
 		if (schema != ADDRESS_SCHEMA_COMPATIBLE) {
 			assertEquals(address.getCity(), rowData.getString(2).toString());
@@ -171,7 +174,7 @@ public class RegistryAvroRowDataSeDeSchemaTest {
 						GenericRecord.class,
 						avroSchema,
 						() -> registryCoder),
-				RowDataToAvroConverters.createRowConverter(rowType));
+				RowDataToAvroConverters.createConverter(rowType));
 	}
 
 	private static AvroRowDataDeserializationSchema getDeserializationSchema(

@@ -21,12 +21,12 @@ package org.apache.flink.connector.jdbc.table;
 import org.apache.flink.connector.jdbc.JdbcTestBase;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.planner.runtime.utils.StreamTestSink;
 import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
-
-import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
+import org.apache.flink.util.CollectionUtil;
 
 import org.junit.After;
 import org.junit.Before;
@@ -36,12 +36,15 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * ITCase for {@link JdbcDynamicTableSource}.
@@ -52,8 +55,18 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 	public static final String DB_URL = "jdbc:derby:memory:test";
 	public static final String INPUT_TABLE = "jdbDynamicTableSource";
 
+	public static StreamExecutionEnvironment env;
+	public static TableEnvironment tEnv;
+
 	@Before
 	public void before() throws ClassNotFoundException, SQLException {
+		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		EnvironmentSettings envSettings = EnvironmentSettings.newInstance()
+				.useBlinkPlanner()
+				.inStreamingMode()
+				.build();
+		tEnv = StreamTableEnvironment.create(env, envSettings);
+
 		System.setProperty("derby.stream.error.field", JdbcTestBase.class.getCanonicalName() + ".DEV_NULL");
 		Class.forName(DRIVER_CLASS);
 
@@ -90,13 +103,6 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 
 	@Test
 	public void testJdbcSource() throws Exception {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		EnvironmentSettings envSettings = EnvironmentSettings.newInstance()
-			.useBlinkPlanner()
-			.inStreamingMode()
-			.build();
-		StreamTableEnvironment tEnv = StreamTableEnvironment.create(env, envSettings);
-
 		tEnv.executeSql(
 			"CREATE TABLE " + INPUT_TABLE + "(" +
 				"id BIGINT," +
@@ -114,7 +120,7 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 		);
 
 		Iterator<Row> collected = tEnv.executeSql("SELECT * FROM " + INPUT_TABLE).collect();
-		List<String> result = Lists.newArrayList(collected).stream()
+		List<String> result = CollectionUtil.iteratorToList(collected).stream()
 			.map(Row::toString)
 			.sorted()
 			.collect(Collectors.toList());
@@ -128,13 +134,6 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 
 	@Test
 	public void testProject() throws Exception {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		EnvironmentSettings envSettings = EnvironmentSettings.newInstance()
-			.useBlinkPlanner()
-			.inStreamingMode()
-			.build();
-		StreamTableEnvironment tEnv = StreamTableEnvironment.create(env, envSettings);
-
 		tEnv.executeSql(
 			"CREATE TABLE " + INPUT_TABLE + "(" +
 				"id BIGINT," +
@@ -156,7 +155,7 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 		);
 
 		Iterator<Row> collected = tEnv.executeSql("SELECT id,timestamp6_col,decimal_col FROM " + INPUT_TABLE).collect();
-		List<String> result = Lists.newArrayList(collected).stream()
+		List<String> result = CollectionUtil.iteratorToList(collected).stream()
 			.map(Row::toString)
 			.sorted()
 			.collect(Collectors.toList());
@@ -166,5 +165,40 @@ public class JdbcDynamicTableSourceITCase extends AbstractTestBase {
 				"2,2020-01-01T15:36:01.123456,101.1234")
 				.sorted().collect(Collectors.toList());
 		assertEquals(expected, result);
+	}
+
+	@Test
+	public void testLimit() throws Exception {
+		tEnv.executeSql(
+				"CREATE TABLE " + INPUT_TABLE + "(\n" +
+						"id BIGINT,\n" +
+						"timestamp6_col TIMESTAMP(6),\n" +
+						"timestamp9_col TIMESTAMP(9),\n" +
+						"time_col TIME,\n" +
+						"real_col FLOAT,\n" +
+						"double_col DOUBLE,\n" +
+						"decimal_col DECIMAL(10, 4)\n" +
+						") WITH (\n" +
+						"  'connector'='jdbc',\n" +
+						"  'url'='" + DB_URL + "',\n" +
+						"  'table-name'='" + INPUT_TABLE + "',\n" +
+						"  'scan.partition.column'='id',\n" +
+						"  'scan.partition.num'='2',\n" +
+						"  'scan.partition.lower-bound'='1',\n" +
+						"  'scan.partition.upper-bound'='2'\n" +
+						")"
+		);
+
+		Iterator<Row> collected = tEnv.executeSql("SELECT * FROM " + INPUT_TABLE + " LIMIT 1").collect();
+		List<String> result = CollectionUtil.iteratorToList(collected).stream()
+				.map(Row::toString)
+				.sorted()
+				.collect(Collectors.toList());
+
+		Set<String> expected = new HashSet<>();
+		expected.add("1,2020-01-01T15:35:00.123456,2020-01-01T15:35:00.123456789,15:35,1.175E-37,1.79769E308,100.1234");
+		expected.add("2,2020-01-01T15:36:01.123456,2020-01-01T15:36:01.123456789,15:36:01,-1.175E-37,-1.79769E308,101.1234");
+		assertEquals(1, result.size());
+		assertTrue("The actual output is not a subset of the expected set.", expected.containsAll(result));
 	}
 }

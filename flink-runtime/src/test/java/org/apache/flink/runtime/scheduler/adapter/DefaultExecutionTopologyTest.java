@@ -22,12 +22,10 @@ import org.apache.flink.runtime.executiongraph.ExecutionEdge;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.IntermediateResultPartition;
-import org.apache.flink.runtime.executiongraph.TestRestartStrategy;
 import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.scheduler.strategy.ResultPartitionState;
@@ -67,8 +65,6 @@ public class DefaultExecutionTopologyTest extends TestLogger {
 
 	private final SimpleAckingTaskManagerGateway taskManagerGateway = new SimpleAckingTaskManagerGateway();
 
-	private final TestRestartStrategy triggeredRestartStrategy = TestRestartStrategy.manuallyTriggered();
-
 	private ExecutionGraph executionGraph;
 
 	private DefaultExecutionTopology adapter;
@@ -82,11 +78,8 @@ public class DefaultExecutionTopologyTest extends TestLogger {
 		jobVertices[1].connectNewDataSetAsInput(jobVertices[0], ALL_TO_ALL, PIPELINED);
 		jobVertices[0].setInputDependencyConstraint(ALL);
 		jobVertices[1].setInputDependencyConstraint(ANY);
-		executionGraph = createSimpleTestGraph(
-			taskManagerGateway,
-			triggeredRestartStrategy,
-			jobVertices);
-		adapter = new DefaultExecutionTopology(executionGraph);
+		executionGraph = createSimpleTestGraph(taskManagerGateway, jobVertices);
+		adapter = DefaultExecutionTopology.fromExecutionGraph(executionGraph);
 	}
 
 	@Test
@@ -144,19 +137,6 @@ public class DefaultExecutionTopologyTest extends TestLogger {
 		}
 	}
 
-	@Test
-	public void testWithCoLocationConstraints() throws Exception {
-		ExecutionGraph executionGraph = createExecutionGraphWithCoLocationConstraint();
-		adapter = new DefaultExecutionTopology(executionGraph);
-		assertTrue(adapter.containsCoLocationConstraints());
-	}
-
-	@Test
-	public void testWithoutCoLocationConstraints() {
-		assertFalse(adapter.containsCoLocationConstraints());
-	}
-
-	@Test
 	public void testGetAllPipelinedRegions() {
 		final Iterable<DefaultSchedulingPipelinedRegion> allPipelinedRegions = adapter.getAllPipelinedRegions();
 		assertEquals(1, Iterables.size(allPipelinedRegions));
@@ -170,32 +150,24 @@ public class DefaultExecutionTopologyTest extends TestLogger {
 		}
 	}
 
+	@Test(expected = IllegalStateException.class)
+	public void testErrorIfCoLocatedTasksAreNotInSameRegion() throws Exception {
+		int parallelism = 3;
+		final JobVertex v1 = createNoOpVertex(parallelism);
+		final JobVertex v2 = createNoOpVertex(parallelism);
+
+		SlotSharingGroup slotSharingGroup = new SlotSharingGroup();
+		v1.setSlotSharingGroup(slotSharingGroup);
+		v2.setSlotSharingGroup(slotSharingGroup);
+		v1.setStrictlyCoLocatedWith(v2);
+
+		final ExecutionGraph executionGraph = createSimpleTestGraph(v1, v2);
+		DefaultExecutionTopology.fromExecutionGraph(executionGraph);
+	}
+
 	private void assertRegionContainsAllVertices(final DefaultSchedulingPipelinedRegion pipelinedRegionOfVertex) {
 		final Set<DefaultExecutionVertex> allVertices = Sets.newHashSet(pipelinedRegionOfVertex.getVertices());
 		assertEquals(Sets.newHashSet(adapter.getVertices()), allVertices);
-	}
-
-	private ExecutionGraph createExecutionGraphWithCoLocationConstraint() throws Exception {
-		JobVertex[] jobVertices = new JobVertex[2];
-		int parallelism = 3;
-		jobVertices[0] = createNoOpVertex("v1", parallelism);
-		jobVertices[1] = createNoOpVertex("v2", parallelism);
-		jobVertices[1].connectNewDataSetAsInput(jobVertices[0], ALL_TO_ALL, PIPELINED);
-
-		SlotSharingGroup slotSharingGroup = new SlotSharingGroup();
-		jobVertices[0].setSlotSharingGroup(slotSharingGroup);
-		jobVertices[1].setSlotSharingGroup(slotSharingGroup);
-
-		CoLocationGroup coLocationGroup = new CoLocationGroup();
-		coLocationGroup.addVertex(jobVertices[0]);
-		coLocationGroup.addVertex(jobVertices[1]);
-		jobVertices[0].updateCoLocationGroup(coLocationGroup);
-		jobVertices[1].updateCoLocationGroup(coLocationGroup);
-
-		return createSimpleTestGraph(
-			taskManagerGateway,
-			triggeredRestartStrategy,
-			jobVertices);
 	}
 
 	private static void assertGraphEquals(

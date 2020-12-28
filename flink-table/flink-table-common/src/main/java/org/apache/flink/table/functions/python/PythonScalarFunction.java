@@ -46,6 +46,7 @@ public class PythonScalarFunction extends ScalarFunction implements PythonFuncti
 	private final PythonFunctionKind pythonFunctionKind;
 	private final boolean deterministic;
 	private final PythonEnv pythonEnv;
+	private final boolean takesRowAsInput;
 
 	public PythonScalarFunction(
 		String name,
@@ -54,6 +55,7 @@ public class PythonScalarFunction extends ScalarFunction implements PythonFuncti
 		TypeInformation resultType,
 		PythonFunctionKind pythonFunctionKind,
 		boolean deterministic,
+		boolean takesRowAsInput,
 		PythonEnv pythonEnv) {
 		this.name = name;
 		this.serializedScalarFunction = serializedScalarFunction;
@@ -62,6 +64,7 @@ public class PythonScalarFunction extends ScalarFunction implements PythonFuncti
 		this.pythonFunctionKind = pythonFunctionKind;
 		this.deterministic = deterministic;
 		this.pythonEnv = pythonEnv;
+		this.takesRowAsInput = takesRowAsInput;
 	}
 
 	public Object eval(Object... args) {
@@ -85,6 +88,11 @@ public class PythonScalarFunction extends ScalarFunction implements PythonFuncti
 	}
 
 	@Override
+	public boolean takesRowAsInput() {
+		return takesRowAsInput;
+	}
+
+	@Override
 	public boolean isDeterministic() {
 		return deterministic;
 	}
@@ -105,11 +113,14 @@ public class PythonScalarFunction extends ScalarFunction implements PythonFuncti
 
 	@Override
 	public TypeInference getTypeInference(DataTypeFactory typeFactory) {
-		final List<DataType> argumentDataTypes = Stream.of(inputTypes)
-			.map(TypeConversions::fromLegacyInfoToDataType)
-			.collect(Collectors.toList());
-		return TypeInference.newBuilder()
-			.typedArguments(argumentDataTypes)
+		TypeInference.Builder builder = TypeInference.newBuilder();
+		if (inputTypes != null) {
+			final List<DataType> argumentDataTypes = Stream.of(inputTypes)
+				.map(TypeConversions::fromLegacyInfoToDataType)
+				.collect(Collectors.toList());
+			builder.typedArguments(argumentDataTypes);
+		}
+		return builder
 			.outputTypeStrategy(TypeStrategies.explicit(TypeConversions.fromLegacyInfoToDataType(resultType)))
 			.build();
 	}
