@@ -18,6 +18,9 @@
 
 package org.apache.flink.connector.kafka.source.enumerator.initializer;
 
+import org.apache.flink.connector.kafka.source.split.KafkaPartitionSplit;
+
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.TopicPartition;
 
@@ -27,56 +30,79 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
+
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * An implementation of {@link OffsetsInitializer} which initializes the offsets
- * of the partition according to the user specified offsets.
+ * An implementation of {@link OffsetsInitializer} which initializes the offsets of the partition
+ * according to the user specified offsets.
  *
- * <P>Package private and should be instantiated via {@link OffsetsInitializer}.
+ * <p>Package private and should be instantiated via {@link OffsetsInitializer}.
  */
-class SpecifiedOffsetsInitializer implements OffsetsInitializer {
-	private static final long serialVersionUID = 1649702397250402877L;
-	private final Map<TopicPartition, Long> initialOffsets;
-	private final OffsetResetStrategy offsetResetStrategy;
+class SpecifiedOffsetsInitializer implements OffsetsInitializer, OffsetsInitializerValidator {
+    private static final long serialVersionUID = 1649702397250402877L;
+    private final Map<TopicPartition, Long> initialOffsets;
+    private final OffsetResetStrategy offsetResetStrategy;
 
-	SpecifiedOffsetsInitializer(
-			Map<TopicPartition, Long> initialOffsets,
-			OffsetResetStrategy offsetResetStrategy) {
-		this.initialOffsets = Collections.unmodifiableMap(initialOffsets);
-		this.offsetResetStrategy = offsetResetStrategy;
-	}
+    SpecifiedOffsetsInitializer(
+            Map<TopicPartition, Long> initialOffsets, OffsetResetStrategy offsetResetStrategy) {
+        this.initialOffsets = Collections.unmodifiableMap(initialOffsets);
+        this.offsetResetStrategy = offsetResetStrategy;
+    }
 
-	@Override
-	public Map<TopicPartition, Long> getPartitionOffsets(
-			Collection<TopicPartition> partitions,
-			PartitionOffsetsRetriever partitionOffsetsRetriever) {
-		Map<TopicPartition, Long> offsets = new HashMap<>();
-		List<TopicPartition> toLookup = new ArrayList<>();
-		for (TopicPartition tp : partitions) {
-			Long offset = initialOffsets.get(tp);
-			if (offset == null) {
-				toLookup.add(tp);
-			} else {
-				offsets.put(tp, offset);
-			}
-		}
-		if (!toLookup.isEmpty()) {
-			switch (offsetResetStrategy) {
-				case EARLIEST:
-					offsets.putAll(partitionOffsetsRetriever.beginningOffsets(toLookup));
-					break;
-				case LATEST:
-					offsets.putAll(partitionOffsetsRetriever.endOffsets(toLookup));
-					break;
-				default:
-					throw new IllegalStateException("Cannot find initial offsets for partitions: " + toLookup);
-			}
-		}
-		return offsets;
-	}
+    @Override
+    public Map<TopicPartition, Long> getPartitionOffsets(
+            Collection<TopicPartition> partitions,
+            PartitionOffsetsRetriever partitionOffsetsRetriever) {
+        Map<TopicPartition, Long> offsets = new HashMap<>();
+        List<TopicPartition> toLookup = new ArrayList<>();
+        for (TopicPartition tp : partitions) {
+            Long offset = initialOffsets.get(tp);
+            if (offset == null) {
+                toLookup.add(tp);
+            } else {
+                offsets.put(tp, offset);
+            }
+        }
+        if (!toLookup.isEmpty()) {
+            // First check the committed offsets.
+            Map<TopicPartition, Long> committedOffsets =
+                    partitionOffsetsRetriever.committedOffsets(toLookup);
+            offsets.putAll(committedOffsets);
+            toLookup.removeAll(committedOffsets.keySet());
 
-	@Override
-	public OffsetResetStrategy getAutoOffsetResetStrategy() {
-		return offsetResetStrategy;
-	}
+            switch (offsetResetStrategy) {
+                case EARLIEST:
+                    offsets.putAll(partitionOffsetsRetriever.beginningOffsets(toLookup));
+                    break;
+                case LATEST:
+                    offsets.putAll(partitionOffsetsRetriever.endOffsets(toLookup));
+                    break;
+                default:
+                    throw new IllegalStateException(
+                            "Cannot find initial offsets for partitions: " + toLookup);
+            }
+        }
+        return offsets;
+    }
+
+    @Override
+    public OffsetResetStrategy getAutoOffsetResetStrategy() {
+        return offsetResetStrategy;
+    }
+
+    @Override
+    public void validate(Properties kafkaSourceProperties) {
+        initialOffsets.forEach(
+                (tp, offset) -> {
+                    if (offset == KafkaPartitionSplit.COMMITTED_OFFSET) {
+                        checkState(
+                                kafkaSourceProperties.containsKey(ConsumerConfig.GROUP_ID_CONFIG),
+                                String.format(
+                                        "Property %s is required because partition %s is initialized with committed offset",
+                                        ConsumerConfig.GROUP_ID_CONFIG, tp));
+                    }
+                });
+    }
 }

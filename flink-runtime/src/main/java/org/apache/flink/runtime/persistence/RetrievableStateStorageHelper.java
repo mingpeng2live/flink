@@ -19,24 +19,23 @@
 package org.apache.flink.runtime.persistence;
 
 import org.apache.flink.runtime.state.RetrievableStateHandle;
-import org.apache.flink.runtime.zookeeper.ZooKeeperStateHandleStore;
 
 import java.io.Serializable;
 
 /**
- * State storage helper which is used by {@link ZooKeeperStateHandleStore} to persist state before
- * the state handle is written to ZooKeeper.
+ * State storage helper which is used by {@link StateHandleStore} to persist state before the state
+ * handle is written to the underlying system.
  *
  * @param <T> The type of the data that can be stored by this storage helper.
  */
 public interface RetrievableStateStorageHelper<T extends Serializable> {
 
-	/**
-	 * Stores the given state and returns a state handle to it.
-	 *
-	 * @param state State to be stored
-	 * @return State handle to the stored state
-	 * @throws Exception
-	 */
-	RetrievableStateHandle<T> store(T state) throws Exception;
+    /**
+     * Stores the given state and returns a state handle to it.
+     *
+     * @param state State to be stored
+     * @return State handle to the stored state
+     * @throws Exception if an error occurred while storing the state.
+     */
+    RetrievableStateHandle<T> store(T state) throws Exception;
 }

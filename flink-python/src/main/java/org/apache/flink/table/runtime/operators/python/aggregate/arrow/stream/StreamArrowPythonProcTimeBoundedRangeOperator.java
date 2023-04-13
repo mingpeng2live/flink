@@ -24,49 +24,57 @@ import org.apache.flink.streaming.api.TimeDomain;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The Stream Arrow Python {@link AggregateFunction} Operator for ROWS clause proc-time bounded
- * OVER window.
+ * The Stream Arrow Python {@link AggregateFunction} Operator for ROWS clause proc-time bounded OVER
+ * window.
  */
 @Internal
 public class StreamArrowPythonProcTimeBoundedRangeOperator<K>
-	extends AbstractStreamArrowPythonBoundedRangeOperator<K> {
+        extends AbstractStreamArrowPythonBoundedRangeOperator<K> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	public StreamArrowPythonProcTimeBoundedRangeOperator(
-		Configuration config,
-		PythonFunctionInfo[] pandasAggFunctions,
-		RowType inputType,
-		RowType outputType,
-		int inputTimeFieldIndex,
-		long lowerBoundary,
-		int[] groupingSet,
-		int[] udafInputOffsets) {
-		super(config, pandasAggFunctions, inputType, outputType, inputTimeFieldIndex, lowerBoundary,
-			groupingSet, udafInputOffsets);
-	}
+    public StreamArrowPythonProcTimeBoundedRangeOperator(
+            Configuration config,
+            PythonFunctionInfo[] pandasAggFunctions,
+            RowType inputType,
+            RowType udfInputType,
+            RowType udfOutputType,
+            int inputTimeFieldIndex,
+            long lowerBoundary,
+            GeneratedProjection generatedProjection) {
+        super(
+                config,
+                pandasAggFunctions,
+                inputType,
+                udfInputType,
+                udfOutputType,
+                inputTimeFieldIndex,
+                lowerBoundary,
+                generatedProjection);
+    }
 
-	@Override
-	public void bufferInput(RowData input) throws Exception {
-		long currentTime = timerService.currentProcessingTime();
-		// buffer the event incoming event
+    @Override
+    public void bufferInput(RowData input) throws Exception {
+        long currentTime = timerService.currentProcessingTime();
+        // buffer the event incoming event
 
-		// add current element to the window list of elements with corresponding timestamp
-		List<RowData> rowList = inputState.get(currentTime);
-		// null value means that this is the first event received for this timestamp
-		if (rowList == null) {
-			rowList = new ArrayList<>();
-			// register timer to process event once the current millisecond passed
-			timerService.registerProcessingTimeTimer(currentTime + 1);
-			registerCleanupTimer(currentTime, TimeDomain.PROCESSING_TIME);
-		}
-		rowList.add(input);
-		inputState.put(currentTime, rowList);
-	}
+        // add current element to the window list of elements with corresponding timestamp
+        List<RowData> rowList = inputState.get(currentTime);
+        // null value means that this is the first event received for this timestamp
+        if (rowList == null) {
+            rowList = new ArrayList<>();
+            // register timer to process event once the current millisecond passed
+            timerService.registerProcessingTimeTimer(currentTime + 1);
+            registerCleanupTimer(currentTime, TimeDomain.PROCESSING_TIME);
+        }
+        rowList.add(input);
+        inputState.put(currentTime, rowList);
+    }
 }

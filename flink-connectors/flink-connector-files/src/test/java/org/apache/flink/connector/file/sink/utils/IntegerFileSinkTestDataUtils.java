@@ -19,6 +19,7 @@
 package org.apache.flink.connector.file.sink.utils;
 
 import org.apache.flink.api.common.serialization.Encoder;
+import org.apache.flink.connector.file.sink.compactor.DecoderBasedReader.Decoder;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.SimpleVersionedStringSerializer;
@@ -28,6 +29,7 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -35,9 +37,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Utilities for file sinks that writes a sequence of continues integers into files starting from 0.
@@ -46,95 +46,122 @@ import static org.junit.Assert.assertTrue;
  */
 public class IntegerFileSinkTestDataUtils {
 
-	/**
-	 * Testing sink {@link Encoder} that writes integer with its binary representation.
-	 */
-	public static class IntEncoder implements Encoder<Integer> {
+    /** Testing sink {@link Encoder} that writes integer with its binary representation. */
+    public static class IntEncoder implements Encoder<Integer> {
 
-		@Override
-		public void encode(Integer element, OutputStream stream) throws IOException {
-			stream.write(ByteBuffer.allocate(4).putInt(element).array());
-			stream.flush();
-		}
-	}
+        @Override
+        public void encode(Integer element, OutputStream stream) throws IOException {
+            stream.write(ByteBuffer.allocate(4).putInt(element).array());
+            stream.flush();
+        }
+    }
 
-	/**
-	 * Testing {@link BucketAssigner} that assigns integers according to modulo.
-	 */
-	public static class ModuloBucketAssigner implements BucketAssigner<Integer, String> {
+    /** Testing sink {@link Decoder} that reads integer for compaction. */
+    public static class IntDecoder implements Decoder<Integer> {
 
-		private final int numBuckets;
+        private InputStream input;
 
-		public ModuloBucketAssigner(int numBuckets) {
-			this.numBuckets = numBuckets;
-		}
+        @Override
+        public void open(InputStream input) throws IOException {
+            this.input = input;
+        }
 
-		@Override
-		public String getBucketId(Integer element, Context context) {
-			return Integer.toString(element % numBuckets);
-		}
+        @Override
+        public Integer decodeNext() throws IOException {
+            byte[] bytes = new byte[4];
+            int read = input.read(bytes);
+            return read < 0 ? null : ByteBuffer.wrap(bytes).getInt();
+        }
 
-		@Override
-		public SimpleVersionedSerializer<String> getSerializer() {
-			return SimpleVersionedStringSerializer.INSTANCE;
-		}
-	}
+        @Override
+        public void close() throws IOException {
+            input.close();
+            input = null;
+        }
+    }
 
-	/**
-	 * Verifies the files written by the sink contains the expected integer sequences.
-	 * The integers are partition into different buckets according to module, and each
-	 * integer will be repeated by <tt>numSources</tt> times.
-	 *
-	 * @param path The directory to check.
-	 * @param numRecords The total number of records.
-	 * @param numBuckets The number of buckets to assign.
-	 * @param numSources The parallelism of sources generating the sequences. Each integer will be
-	 *                   repeat for <tt>numSources</tt> times.
-	 */
-	public static void checkIntegerSequenceSinkOutput(String path, int numRecords, int numBuckets, int numSources) throws Exception {
-		File dir = new File(path);
-		String[] subDirNames = dir.list();
-		assertNotNull(subDirNames);
+    /** Testing {@link BucketAssigner} that assigns integers according to modulo. */
+    public static class ModuloBucketAssigner implements BucketAssigner<Integer, String> {
 
-		Arrays.sort(subDirNames, Comparator.comparingInt(Integer::parseInt));
-		assertEquals(numBuckets, subDirNames.length);
-		for (int i = 0; i < numBuckets; ++i) {
-			assertEquals(Integer.toString(i), subDirNames[i]);
+        private final int numBuckets;
 
-			// now check its content
-			File bucketDir = new File(path, subDirNames[i]);
-			assertTrue(
-					bucketDir.getAbsolutePath() + " Should be a existing directory",
-					bucketDir.isDirectory());
+        public ModuloBucketAssigner(int numBuckets) {
+            this.numBuckets = numBuckets;
+        }
 
-			Map<Integer, Integer> counts = new HashMap<>();
-			File[] files = bucketDir.listFiles(f -> !f.getName().startsWith("."));
-			assertNotNull(files);
+        @Override
+        public String getBucketId(Integer element, Context context) {
+            return Integer.toString(element % numBuckets);
+        }
 
-			for (File file : files) {
-				assertTrue(file.isFile());
+        @Override
+        public SimpleVersionedSerializer<String> getSerializer() {
+            return SimpleVersionedStringSerializer.INSTANCE;
+        }
+    }
 
-				try (DataInputStream dataInputStream = new DataInputStream(new FileInputStream(file))) {
-					while (true) {
-						int value = dataInputStream.readInt();
-						counts.compute(value, (k, v) -> v == null ? 1 : v + 1);
-					}
-				} catch (EOFException e) {
-					// End the reading
-				}
-			}
+    /**
+     * Verifies the files written by the sink contains the expected integer sequences. The integers
+     * are partition into different buckets according to module, and each integer will be repeated
+     * by <tt>numSources</tt> times.
+     *
+     * @param path The directory to check.
+     * @param numRecords The total number of records.
+     * @param numBuckets The number of buckets to assign.
+     * @param numSources The parallelism of sources generating the sequences. Each integer will be
+     *     repeat for <tt>numSources</tt> times.
+     */
+    public static void checkIntegerSequenceSinkOutput(
+            String path, int numRecords, int numBuckets, int numSources) throws Exception {
+        File dir = new File(path);
+        String[] subDirNames = dir.list();
+        assertThat(subDirNames).isNotNull();
 
-			int expectedCount = numRecords / numBuckets +
-					(i < numRecords % numBuckets ? 1 : 0);
-			assertEquals(expectedCount, counts.size());
+        Arrays.sort(subDirNames, Comparator.comparingInt(Integer::parseInt));
+        assertThat(subDirNames).hasSize(numBuckets);
+        for (int i = 0; i < numBuckets; ++i) {
+            assertThat(subDirNames[i]).isEqualTo(Integer.toString(i));
 
-			for (int j = i; j < numRecords; j += numBuckets) {
-				assertEquals(
-						"The record " + j + " should occur " + numSources + " times, " +
-								" but only occurs " + counts.getOrDefault(j, 0) + "time",
-						numSources,
-						counts.getOrDefault(j, 0).intValue());
-			}
-		}
-	}
+            // now check its content
+            File bucketDir = new File(path, subDirNames[i]);
+            assertThat(bucketDir)
+                    .as(bucketDir.getAbsolutePath() + " Should be a existing directory")
+                    .isDirectory();
+
+            Map<Integer, Integer> counts = new HashMap<>();
+            File[] files = bucketDir.listFiles(f -> !f.getName().startsWith("."));
+            assertThat(files).isNotNull();
+
+            for (File file : files) {
+                assertThat(file).isFile();
+
+                try (DataInputStream dataInputStream =
+                        new DataInputStream(new FileInputStream(file))) {
+                    while (true) {
+                        int value = dataInputStream.readInt();
+                        counts.compute(value, (k, v) -> v == null ? 1 : v + 1);
+                    }
+                } catch (EOFException e) {
+                    // End the reading
+                }
+            }
+
+            int expectedCount = numRecords / numBuckets + (i < numRecords % numBuckets ? 1 : 0);
+            assertThat(counts).hasSize(expectedCount);
+
+            for (int j = i; j < numRecords; j += numBuckets) {
+                assertThat(counts.getOrDefault(j, 0).intValue())
+                        .as(
+                                "The record "
+                                        + j
+                                        + " should occur "
+                                        + numSources
+                                        + " times, "
+                                        + " but only occurs "
+                                        + counts.getOrDefault(j, 0)
+                                        + "time")
+                        .isEqualTo(numSources);
+            }
+        }
+    }
 }

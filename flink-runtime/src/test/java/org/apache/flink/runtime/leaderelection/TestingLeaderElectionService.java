@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.leaderelection;
 
 import org.apache.flink.runtime.util.LeaderConnectionInfo;
+import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nonnull;
 
@@ -31,94 +32,101 @@ import java.util.concurrent.CompletableFuture;
  */
 public class TestingLeaderElectionService implements LeaderElectionService {
 
-	private LeaderContender contender = null;
-	private boolean hasLeadership = false;
-	private CompletableFuture<LeaderConnectionInfo> confirmationFuture = null;
-	private CompletableFuture<Void> startFuture = new CompletableFuture<>();
-	private UUID issuedLeaderSessionId = null;
+    private LeaderContender contender = null;
+    private boolean hasLeadership = false;
+    private CompletableFuture<LeaderConnectionInfo> confirmationFuture = null;
+    private CompletableFuture<Void> startFuture = new CompletableFuture<>();
+    private UUID issuedLeaderSessionId = null;
 
-	/**
-	 * Gets a future that completes when leadership is confirmed.
-	 *
-	 * <p>Note: the future is created upon calling {@link #isLeader(UUID)}.
-	 */
-	public synchronized CompletableFuture<LeaderConnectionInfo> getConfirmationFuture() {
-		return confirmationFuture;
-	}
+    /**
+     * Gets a future that completes when leadership is confirmed.
+     *
+     * <p>Note: the future is created upon calling {@link #isLeader(UUID)}.
+     */
+    public synchronized CompletableFuture<LeaderConnectionInfo> getConfirmationFuture() {
+        return confirmationFuture;
+    }
 
-	@Override
-	public synchronized void start(LeaderContender contender) {
-		assert(!getStartFuture().isDone());
+    @Override
+    public synchronized void start(LeaderContender contender) {
+        Preconditions.checkState(!getStartFuture().isDone());
 
-		this.contender = contender;
+        this.contender = contender;
 
-		if (hasLeadership) {
-			contender.grantLeadership(issuedLeaderSessionId);
-		}
+        if (hasLeadership) {
+            contender.grantLeadership(issuedLeaderSessionId);
+        }
 
-		startFuture.complete(null);
-	}
+        startFuture.complete(null);
+    }
 
-	@Override
-	public synchronized void stop() throws Exception {
-		contender = null;
-		hasLeadership = false;
-		issuedLeaderSessionId = null;
-		startFuture.cancel(false);
-		startFuture = new CompletableFuture<>();
-	}
+    @Override
+    public synchronized void stop() throws Exception {
+        if (hasLeadership && contender != null) {
+            contender.revokeLeadership();
+        }
 
-	@Override
-	public synchronized void confirmLeadership(UUID leaderSessionID, String leaderAddress) {
-		if (confirmationFuture != null) {
-			confirmationFuture.complete(new LeaderConnectionInfo(leaderSessionID, leaderAddress));
-		}
-	}
+        contender = null;
+        hasLeadership = false;
+        issuedLeaderSessionId = null;
+        startFuture.cancel(false);
+        startFuture = new CompletableFuture<>();
+    }
 
-	@Override
-	public synchronized boolean hasLeadership(@Nonnull UUID leaderSessionId) {
-		return hasLeadership && leaderSessionId.equals(issuedLeaderSessionId);
-	}
+    @Override
+    public synchronized void confirmLeadership(UUID leaderSessionID, String leaderAddress) {
+        if (confirmationFuture != null) {
+            confirmationFuture.complete(new LeaderConnectionInfo(leaderSessionID, leaderAddress));
+        }
+    }
 
-	public synchronized CompletableFuture<UUID> isLeader(UUID leaderSessionID) {
-		if (confirmationFuture != null) {
-			confirmationFuture.cancel(false);
-		}
-		confirmationFuture = new CompletableFuture<>();
-		hasLeadership = true;
-		issuedLeaderSessionId = leaderSessionID;
+    @Override
+    public synchronized boolean hasLeadership(@Nonnull UUID leaderSessionId) {
+        return hasLeadership && leaderSessionId.equals(issuedLeaderSessionId);
+    }
 
-		if (contender != null) {
-			contender.grantLeadership(leaderSessionID);
-		}
+    public synchronized CompletableFuture<UUID> isLeader(UUID leaderSessionID) {
+        if (confirmationFuture != null) {
+            confirmationFuture.cancel(false);
+        }
+        confirmationFuture = new CompletableFuture<>();
+        hasLeadership = true;
+        issuedLeaderSessionId = leaderSessionID;
 
-		return confirmationFuture.thenApply(LeaderConnectionInfo::getLeaderSessionId);
-	}
+        if (contender != null) {
+            contender.grantLeadership(leaderSessionID);
+        }
 
-	public synchronized void notLeader() {
-		hasLeadership = false;
+        return confirmationFuture.thenApply(LeaderConnectionInfo::getLeaderSessionId);
+    }
 
-		if (contender != null) {
-			contender.revokeLeadership();
-		}
-	}
+    public synchronized void notLeader() {
+        hasLeadership = false;
 
-	public synchronized String getAddress() {
-		if (confirmationFuture.isDone()) {
-			return confirmationFuture.join().getAddress();
-		} else {
-			throw new IllegalStateException("TestingLeaderElectionService has not been started.");
-		}
-	}
+        if (contender != null) {
+            contender.revokeLeadership();
+        }
+    }
 
-	/**
-	 * Returns the start future indicating whether this leader election service
-	 * has been started or not.
-	 *
-	 * @return Future which is completed once this service has been started
-	 */
-	public synchronized CompletableFuture<Void> getStartFuture() {
-		return startFuture;
-	}
+    public synchronized String getAddress() {
+        if (confirmationFuture.isDone()) {
+            return confirmationFuture.join().getAddress();
+        } else {
+            throw new IllegalStateException("TestingLeaderElectionService has not been started.");
+        }
+    }
 
+    /**
+     * Returns the start future indicating whether this leader election service has been started or
+     * not.
+     *
+     * @return Future which is completed once this service has been started
+     */
+    public synchronized CompletableFuture<Void> getStartFuture() {
+        return startFuture;
+    }
+
+    public synchronized boolean isStopped() {
+        return contender == null;
+    }
 }

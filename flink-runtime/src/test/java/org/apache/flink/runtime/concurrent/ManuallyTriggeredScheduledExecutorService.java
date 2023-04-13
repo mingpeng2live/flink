@@ -18,15 +18,16 @@
 
 package org.apache.flink.runtime.concurrent;
 
+import org.apache.flink.util.concurrent.ScheduledExecutor;
+
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * Simple {@link ScheduledExecutorService} implementation for testing purposes.
  *
- * <p>This is identical to the testing service provided in the flink-test-utils and is here
- * as a backwards-compatible re-direct.
+ * <p>This is identical to the testing service provided in the flink-test-utils and is here as a
+ * backwards-compatible re-direct.
  */
 public class ManuallyTriggeredScheduledExecutorService
-		extends org.apache.flink.core.testutils.ManuallyTriggeredScheduledExecutorService
-		implements ScheduledExecutor, ScheduledExecutorService {
-}
+        extends org.apache.flink.core.testutils.ManuallyTriggeredScheduledExecutorService
+        implements ScheduledExecutor, ScheduledExecutorService {}

@@ -27,109 +27,176 @@ import org.apache.flink.table.types.inference.TypeInference;
 import org.apache.flink.table.types.inference.TypeStrategies;
 import org.apache.flink.table.types.utils.TypeConversions;
 
-/**
- * The wrapper of user defined python aggregate function.
- */
+import java.util.Arrays;
+
+/** The wrapper of user defined python aggregate function. */
 @Internal
 public class PythonAggregateFunction extends AggregateFunction implements PythonFunction {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private final String name;
-	private final byte[] serializedAggregateFunction;
-	private final DataType[] inputTypes;
-	private final DataType resultType;
-	private final DataType accumulatorType;
-	private final PythonFunctionKind pythonFunctionKind;
-	private final boolean deterministic;
-	private final PythonEnv pythonEnv;
-	private final boolean takesRowAsInput;
+    private final String name;
+    private final byte[] serializedAggregateFunction;
+    private final PythonFunctionKind pythonFunctionKind;
+    private final boolean deterministic;
+    private final PythonEnv pythonEnv;
+    private final boolean takesRowAsInput;
 
-	public PythonAggregateFunction(
-		String name,
-		byte[] serializedAggregateFunction,
-		DataType[] inputTypes,
-		DataType resultType,
-		DataType accumulatorType,
-		PythonFunctionKind pythonFunctionKind,
-		boolean deterministic,
-		boolean takesRowAsInput,
-		PythonEnv pythonEnv) {
-		this.name = name;
-		this.serializedAggregateFunction = serializedAggregateFunction;
-		this.inputTypes = inputTypes;
-		this.resultType = resultType;
-		this.accumulatorType = accumulatorType;
-		this.pythonFunctionKind = pythonFunctionKind;
-		this.deterministic = deterministic;
-		this.pythonEnv = pythonEnv;
-		this.takesRowAsInput = takesRowAsInput;
-	}
+    private DataType[] inputTypes;
+    private String[] inputTypesString;
+    private DataType resultType;
+    private String resultTypeString;
+    private DataType accumulatorType;
+    private String accumulatorTypeString;
 
-	public void accumulate(Object accumulator, Object... args) {
-		throw new UnsupportedOperationException(
-			"This method is a placeholder and should not be called.");
-	}
+    public PythonAggregateFunction(
+            String name,
+            byte[] serializedAggregateFunction,
+            DataType[] inputTypes,
+            DataType resultType,
+            DataType accumulatorType,
+            PythonFunctionKind pythonFunctionKind,
+            boolean deterministic,
+            boolean takesRowAsInput,
+            PythonEnv pythonEnv) {
+        this(
+                name,
+                serializedAggregateFunction,
+                pythonFunctionKind,
+                deterministic,
+                takesRowAsInput,
+                pythonEnv);
+        this.inputTypes = inputTypes;
+        this.resultType = resultType;
+        this.accumulatorType = accumulatorType;
+    }
 
-	@Override
-	public Object getValue(Object accumulator) {
-		return null;
-	}
+    public PythonAggregateFunction(
+            String name,
+            byte[] serializedAggregateFunction,
+            String[] inputTypesString,
+            String resultTypeString,
+            String accumulatorTypeString,
+            PythonFunctionKind pythonFunctionKind,
+            boolean deterministic,
+            boolean takesRowAsInput,
+            PythonEnv pythonEnv) {
+        this(
+                name,
+                serializedAggregateFunction,
+                pythonFunctionKind,
+                deterministic,
+                takesRowAsInput,
+                pythonEnv);
+        this.inputTypesString = inputTypesString;
+        this.resultTypeString = resultTypeString;
+        this.accumulatorTypeString = accumulatorTypeString;
+    }
 
-	@Override
-	public Object createAccumulator() {
-		return null;
-	}
+    public PythonAggregateFunction(
+            String name,
+            byte[] serializedAggregateFunction,
+            PythonFunctionKind pythonFunctionKind,
+            boolean deterministic,
+            boolean takesRowAsInput,
+            PythonEnv pythonEnv) {
+        this.name = name;
+        this.serializedAggregateFunction = serializedAggregateFunction;
+        this.pythonFunctionKind = pythonFunctionKind;
+        this.deterministic = deterministic;
+        this.pythonEnv = pythonEnv;
+        this.takesRowAsInput = takesRowAsInput;
+    }
 
-	@Override
-	public byte[] getSerializedPythonFunction() {
-		return serializedAggregateFunction;
-	}
+    public void accumulate(Object accumulator, Object... args) {
+        throw new UnsupportedOperationException(
+                "This method is a placeholder and should not be called.");
+    }
 
-	@Override
-	public PythonEnv getPythonEnv() {
-		return pythonEnv;
-	}
+    @Override
+    public Object getValue(Object accumulator) {
+        return null;
+    }
 
-	@Override
-	public PythonFunctionKind getPythonFunctionKind() {
-		return pythonFunctionKind;
-	}
+    @Override
+    public Object createAccumulator() {
+        return null;
+    }
 
-	@Override
-	public boolean takesRowAsInput() {
-		return takesRowAsInput;
-	}
+    @Override
+    public byte[] getSerializedPythonFunction() {
+        return serializedAggregateFunction;
+    }
 
-	@Override
-	public boolean isDeterministic() {
-		return deterministic;
-	}
+    @Override
+    public PythonEnv getPythonEnv() {
+        return pythonEnv;
+    }
 
-	@Override
-	public TypeInformation getResultType() {
-		return TypeConversions.fromDataTypeToLegacyInfo(resultType);
-	}
+    @Override
+    public PythonFunctionKind getPythonFunctionKind() {
+        return pythonFunctionKind;
+    }
 
-	@Override
-	public TypeInformation getAccumulatorType() {
-		return TypeConversions.fromDataTypeToLegacyInfo(accumulatorType);
-	}
+    @Override
+    public boolean takesRowAsInput() {
+        return takesRowAsInput;
+    }
 
-	@Override
-	public TypeInference getTypeInference(DataTypeFactory typeFactory) {
-		TypeInference.Builder builder = TypeInference.newBuilder();
-		if (inputTypes != null) {
-			builder.typedArguments(inputTypes);
-		}
-		return builder
-			.outputTypeStrategy(TypeStrategies.explicit(resultType))
-			.accumulatorTypeStrategy(TypeStrategies.explicit(accumulatorType))
-			.build();
-	}
+    @Override
+    public boolean isDeterministic() {
+        return deterministic;
+    }
 
-	@Override
-	public String toString() {
-		return name;
-	}
+    @Override
+    public TypeInformation getResultType() {
+        if (resultType == null && resultTypeString != null) {
+            throw new RuntimeException(
+                    "String format result type is not supported in old type system.");
+        }
+        return TypeConversions.fromDataTypeToLegacyInfo(resultType);
+    }
+
+    @Override
+    public TypeInformation getAccumulatorType() {
+        if (accumulatorType == null && accumulatorTypeString != null) {
+            throw new RuntimeException(
+                    "String format accumulator type is not supported in old type system.");
+        }
+        return TypeConversions.fromDataTypeToLegacyInfo(accumulatorType);
+    }
+
+    @Override
+    public TypeInference getTypeInference(DataTypeFactory typeFactory) {
+        TypeInference.Builder builder = TypeInference.newBuilder();
+
+        if (inputTypesString != null) {
+            inputTypes =
+                    (DataType[])
+                            Arrays.stream(inputTypesString)
+                                    .map(typeFactory::createDataType)
+                                    .toArray();
+        }
+
+        if (inputTypes != null) {
+            builder.typedArguments(inputTypes);
+        }
+
+        if (resultType == null) {
+            resultType = typeFactory.createDataType(resultTypeString);
+        }
+
+        if (accumulatorType == null) {
+            accumulatorType = typeFactory.createDataType(accumulatorTypeString);
+        }
+
+        return builder.outputTypeStrategy(TypeStrategies.explicit(resultType))
+                .accumulatorTypeStrategy(TypeStrategies.explicit(accumulatorType))
+                .build();
+    }
+
+    @Override
+    public String toString() {
+        return name;
+    }
 }

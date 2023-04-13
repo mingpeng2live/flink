@@ -21,6 +21,7 @@ package org.apache.flink.test.util;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.ExecutionEnvironmentFactory;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.util.Preconditions;
@@ -34,113 +35,104 @@ import java.util.Collections;
  */
 public class TestEnvironment extends ExecutionEnvironment {
 
-	private final MiniCluster miniCluster;
+    private final MiniCluster miniCluster;
 
-	private TestEnvironment lastEnv;
+    private TestEnvironment lastEnv;
 
-	public TestEnvironment(
-			MiniCluster miniCluster,
-			int parallelism,
-			boolean isObjectReuseEnabled,
-			Collection<Path> jarFiles,
-			Collection<URL> classPaths) {
-		super(
-				new MiniClusterPipelineExecutorServiceLoader(miniCluster),
-				MiniClusterPipelineExecutorServiceLoader.createConfiguration(jarFiles, classPaths),
-				null);
+    public TestEnvironment(
+            MiniCluster miniCluster,
+            int parallelism,
+            boolean isObjectReuseEnabled,
+            Collection<Path> jarFiles,
+            Collection<URL> classPaths) {
+        super(
+                new MiniClusterPipelineExecutorServiceLoader(miniCluster),
+                MiniClusterPipelineExecutorServiceLoader.updateConfigurationForMiniCluster(
+                        new Configuration(), jarFiles, classPaths),
+                null);
 
-		this.miniCluster = Preconditions.checkNotNull(miniCluster);
+        this.miniCluster = Preconditions.checkNotNull(miniCluster);
 
-		setParallelism(parallelism);
+        setParallelism(parallelism);
 
-		if (isObjectReuseEnabled) {
-			getConfig().enableObjectReuse();
-		} else {
-			getConfig().disableObjectReuse();
-		}
+        if (isObjectReuseEnabled) {
+            getConfig().enableObjectReuse();
+        } else {
+            getConfig().disableObjectReuse();
+        }
 
-		lastEnv = null;
-	}
+        lastEnv = null;
+    }
 
-	public TestEnvironment(
-			MiniCluster executor,
-			int parallelism,
-			boolean isObjectReuseEnabled) {
-		this(
-				executor,
-				parallelism,
-				isObjectReuseEnabled,
-				Collections.emptyList(),
-				Collections.emptyList());
-	}
+    public TestEnvironment(MiniCluster executor, int parallelism, boolean isObjectReuseEnabled) {
+        this(
+                executor,
+                parallelism,
+                isObjectReuseEnabled,
+                Collections.emptyList(),
+                Collections.emptyList());
+    }
 
-	@Override
-	public JobExecutionResult getLastJobExecutionResult() {
-		if (lastEnv == null) {
-			return lastJobExecutionResult;
-		} else {
-			return lastEnv.getLastJobExecutionResult();
-		}
-	}
+    @Override
+    public JobExecutionResult getLastJobExecutionResult() {
+        if (lastEnv == null) {
+            return lastJobExecutionResult;
+        } else {
+            return lastEnv.getLastJobExecutionResult();
+        }
+    }
 
-	public void setAsContext() {
-		ExecutionEnvironmentFactory factory = () -> {
-			lastEnv = new TestEnvironment(
-					miniCluster,
-					getParallelism(),
-					getConfig().isObjectReuseEnabled());
-			return lastEnv;
-		};
+    public void setAsContext() {
+        ExecutionEnvironmentFactory factory =
+                () -> {
+                    lastEnv =
+                            new TestEnvironment(
+                                    miniCluster,
+                                    getParallelism(),
+                                    getConfig().isObjectReuseEnabled());
+                    return lastEnv;
+                };
 
-		initializeContextEnvironment(factory);
-	}
+        initializeContextEnvironment(factory);
+    }
 
-	// ---------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------
 
-	/**
-	 * Sets the current {@link ExecutionEnvironment} to be a {@link TestEnvironment}. The test
-	 * environment executes the given jobs on a Flink mini cluster with the given default
-	 * parallelism and the additional jar files and class paths.
-	 *
-	 * @param miniCluster The MiniCluster to execute jobs on.
-	 * @param parallelism The default parallelism
-	 * @param jarFiles Additional jar files to execute the job with
-	 * @param classPaths Additional class paths to execute the job with
-	 */
-	public static void setAsContext(
-			final MiniCluster miniCluster,
-			final int parallelism,
-			final Collection<Path> jarFiles,
-			final Collection<URL> classPaths) {
+    /**
+     * Sets the current {@link ExecutionEnvironment} to be a {@link TestEnvironment}. The test
+     * environment executes the given jobs on a Flink mini cluster with the given default
+     * parallelism and the additional jar files and class paths.
+     *
+     * @param miniCluster The MiniCluster to execute jobs on.
+     * @param parallelism The default parallelism
+     * @param jarFiles Additional jar files to execute the job with
+     * @param classPaths Additional class paths to execute the job with
+     */
+    public static void setAsContext(
+            final MiniCluster miniCluster,
+            final int parallelism,
+            final Collection<Path> jarFiles,
+            final Collection<URL> classPaths) {
 
-		ExecutionEnvironmentFactory factory = () -> new TestEnvironment(
-				miniCluster,
-				parallelism,
-				false,
-				jarFiles,
-				classPaths
-		);
+        ExecutionEnvironmentFactory factory =
+                () -> new TestEnvironment(miniCluster, parallelism, false, jarFiles, classPaths);
 
-		initializeContextEnvironment(factory);
-	}
+        initializeContextEnvironment(factory);
+    }
 
-	/**
-	 * Sets the current {@link ExecutionEnvironment} to be a {@link TestEnvironment}. The test
-	 * environment executes the given jobs on a Flink mini cluster with the given default
-	 * parallelism and the additional jar files and class paths.
-	 *
-	 * @param miniCluster The MiniCluster to execute jobs on.
-	 * @param parallelism The default parallelism
-	 */
-	public static void setAsContext(final MiniCluster miniCluster, final int parallelism) {
-		setAsContext(
-				miniCluster,
-				parallelism,
-				Collections.emptyList(),
-				Collections.emptyList());
-	}
+    /**
+     * Sets the current {@link ExecutionEnvironment} to be a {@link TestEnvironment}. The test
+     * environment executes the given jobs on a Flink mini cluster with the given default
+     * parallelism and the additional jar files and class paths.
+     *
+     * @param miniCluster The MiniCluster to execute jobs on.
+     * @param parallelism The default parallelism
+     */
+    public static void setAsContext(final MiniCluster miniCluster, final int parallelism) {
+        setAsContext(miniCluster, parallelism, Collections.emptyList(), Collections.emptyList());
+    }
 
-	public static void unsetAsContext() {
-		resetContextEnvironment();
-	}
+    public static void unsetAsContext() {
+        resetContextEnvironment();
+    }
 }

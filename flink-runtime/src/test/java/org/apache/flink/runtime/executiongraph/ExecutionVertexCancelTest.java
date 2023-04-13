@@ -21,21 +21,25 @@ package org.apache.flink.runtime.executiongraph;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
-import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
-import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
 import org.apache.flink.runtime.jobmaster.LogicalSlot;
 import org.apache.flink.runtime.jobmaster.TestingLogicalSlotBuilder;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.scheduler.SchedulerBase;
 import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.FutureUtils;
 
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createNoOpVertex;
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.getExecutionVertex;
@@ -43,231 +47,255 @@ import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.se
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.setVertexState;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-/**
- * Tests for cancelling {@link ExecutionVertex ExecutionVertices}.
- */
+/** Tests for cancelling {@link ExecutionVertex ExecutionVertices}. */
 public class ExecutionVertexCancelTest extends TestLogger {
 
-	// --------------------------------------------------------------------------------------------
-	//  Canceling in different states
-	// --------------------------------------------------------------------------------------------
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
 
-	@Test
-	public void testCancelFromCreated() {
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+    // --------------------------------------------------------------------------------------------
+    //  Canceling in different states
+    // --------------------------------------------------------------------------------------------
 
-			assertEquals(ExecutionState.CREATED, vertex.getExecutionState());
+    @Test
+    public void testCancelFromCreated() {
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			vertex.cancel();
+            assertEquals(ExecutionState.CREATED, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
+            vertex.cancel();
 
-			assertNull(vertex.getFailureCause());
+            assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(vertex.getFailureInfo().isPresent());
 
-	@Test
-	public void testCancelFromScheduled() {
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			setVertexState(vertex, ExecutionState.SCHEDULED);
-			assertEquals(ExecutionState.SCHEDULED, vertex.getExecutionState());
+    @Test
+    public void testCancelFromScheduled() {
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			vertex.cancel();
+            setVertexState(vertex, ExecutionState.SCHEDULED);
+            assertEquals(ExecutionState.SCHEDULED, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
+            vertex.cancel();
 
-			assertNull(vertex.getFailureCause());
+            assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(vertex.getFailureInfo().isPresent());
 
-	@Test
-	public void testCancelFromRunning() {
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			LogicalSlot slot = new TestingLogicalSlotBuilder().setTaskManagerGateway(new CancelSequenceSimpleAckingTaskManagerGateway(1)).createTestingLogicalSlot();
+    @Test
+    public void testCancelFromRunning() {
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			setVertexResource(vertex, slot);
-			setVertexState(vertex, ExecutionState.RUNNING);
+            LogicalSlot slot =
+                    new TestingLogicalSlotBuilder()
+                            .setTaskManagerGateway(
+                                    new CancelSequenceSimpleAckingTaskManagerGateway(1))
+                            .createTestingLogicalSlot();
 
-			assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
+            setVertexResource(vertex, slot);
+            setVertexState(vertex, ExecutionState.RUNNING);
 
-			vertex.cancel();
-			vertex.getCurrentExecutionAttempt().completeCancelling(); // response by task manager once actually canceled
+            assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
+            vertex.cancel();
+            vertex.getCurrentExecutionAttempt()
+                    .completeCancelling(); // response by task manager once actually canceled
 
-			assertFalse(slot.isAlive());
+            assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
 
-			assertNull(vertex.getFailureCause());
+            assertFalse(slot.isAlive());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
-		} catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(vertex.getFailureInfo().isPresent());
 
-	@Test
-	public void testRepeatedCancelFromRunning() {
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			LogicalSlot slot = new TestingLogicalSlotBuilder().setTaskManagerGateway(new CancelSequenceSimpleAckingTaskManagerGateway(1)).createTestingLogicalSlot();
+    @Test
+    public void testRepeatedCancelFromRunning() {
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			setVertexResource(vertex, slot);
-			setVertexState(vertex, ExecutionState.RUNNING);
+            LogicalSlot slot =
+                    new TestingLogicalSlotBuilder()
+                            .setTaskManagerGateway(
+                                    new CancelSequenceSimpleAckingTaskManagerGateway(1))
+                            .createTestingLogicalSlot();
 
-			assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
+            setVertexResource(vertex, slot);
+            setVertexState(vertex, ExecutionState.RUNNING);
 
-			vertex.cancel();
+            assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
+            vertex.cancel();
 
-			vertex.cancel();
+            assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
+            vertex.cancel();
 
-			// callback by TaskManager after canceling completes
-			vertex.getCurrentExecutionAttempt().completeCancelling();
+            assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
+            // callback by TaskManager after canceling completes
+            vertex.getCurrentExecutionAttempt().completeCancelling();
 
-			assertFalse(slot.isAlive());
+            assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
 
-			assertNull(vertex.getFailureCause());
+            assertFalse(slot.isAlive());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
-		} catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(vertex.getFailureInfo().isPresent());
 
-	@Test
-	public void testCancelFromRunningDidNotFindTask() {
-		// this may happen when the task finished or failed while the call was in progress
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELED) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			LogicalSlot slot = new TestingLogicalSlotBuilder().setTaskManagerGateway(new CancelSequenceSimpleAckingTaskManagerGateway(1)).createTestingLogicalSlot();
+    @Test
+    public void testCancelFromRunningDidNotFindTask() {
+        // this may happen when the task finished or failed while the call was in progress
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			setVertexResource(vertex, slot);
-			setVertexState(vertex, ExecutionState.RUNNING);
+            LogicalSlot slot =
+                    new TestingLogicalSlotBuilder()
+                            .setTaskManagerGateway(
+                                    new CancelSequenceSimpleAckingTaskManagerGateway(1))
+                            .createTestingLogicalSlot();
 
-			assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
+            setVertexResource(vertex, slot);
+            setVertexState(vertex, ExecutionState.RUNNING);
 
-			vertex.cancel();
+            assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
 
-			assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
+            vertex.cancel();
 
-			assertNull(vertex.getFailureCause());
+            assertEquals(ExecutionState.CANCELING, vertex.getExecutionState());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-		} catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(vertex.getFailureInfo().isPresent());
 
-	@Test
-	public void testCancelCallFails() {
-		try {
-			final ExecutionVertex vertex = getExecutionVertex();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			LogicalSlot slot = new TestingLogicalSlotBuilder().setTaskManagerGateway(new CancelSequenceSimpleAckingTaskManagerGateway(0)).createTestingLogicalSlot();
+    @Test
+    public void testCancelCallFails() {
+        try {
+            final ExecutionVertex vertex = getExecutionVertex();
 
-			setVertexResource(vertex, slot);
-			setVertexState(vertex, ExecutionState.RUNNING);
+            LogicalSlot slot =
+                    new TestingLogicalSlotBuilder()
+                            .setTaskManagerGateway(
+                                    new CancelSequenceSimpleAckingTaskManagerGateway(0))
+                            .createTestingLogicalSlot();
 
-			assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
+            setVertexResource(vertex, slot);
+            setVertexState(vertex, ExecutionState.RUNNING);
 
-			vertex.cancel();
+            assertEquals(ExecutionState.RUNNING, vertex.getExecutionState());
 
-			// Callback fails, leading to CANCELED
-			assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
+            vertex.cancel();
 
-			assertFalse(slot.isAlive());
+            // Callback fails, leading to CANCELED
+            assertEquals(ExecutionState.CANCELED, vertex.getExecutionState());
 
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
-			assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
-		} catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            assertFalse(slot.isAlive());
 
-	@Test
-	public void testSendCancelAndReceiveFail() throws Exception {
-		final SchedulerBase scheduler = SchedulerTestingUtils.createScheduler(new JobGraph(createNoOpVertex(10)));
-		final ExecutionGraph graph = scheduler.getExecutionGraph();
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CREATED) > 0);
+            assertTrue(vertex.getStateTimestamp(ExecutionState.CANCELING) > 0);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-		scheduler.initialize(ComponentMainThreadExecutorServiceAdapter.forMainThread());
-		scheduler.startScheduling();
+    @Test
+    public void testSendCancelAndReceiveFail() throws Exception {
+        final SchedulerBase scheduler =
+                SchedulerTestingUtils.createScheduler(
+                        JobGraphTestUtils.streamingJobGraph(createNoOpVertex(10)),
+                        ComponentMainThreadExecutorServiceAdapter.forMainThread(),
+                        EXECUTOR_RESOURCE.getExecutor());
+        final ExecutionGraph graph = scheduler.getExecutionGraph();
 
-		ExecutionGraphTestUtils.switchAllVerticesToRunning(graph);
-		assertEquals(JobStatus.RUNNING, graph.getState());
+        scheduler.startScheduling();
 
-		final ExecutionVertex[] vertices = graph.getVerticesTopologically().iterator().next().getTaskVertices();
-		assertEquals(vertices.length, graph.getRegisteredExecutions().size());
+        ExecutionGraphTestUtils.switchAllVerticesToRunning(graph);
+        assertEquals(JobStatus.RUNNING, graph.getState());
 
-		final Execution exec = vertices[3].getCurrentExecutionAttempt();
-		exec.cancel();
-		assertEquals(ExecutionState.CANCELING, exec.getState());
+        final ExecutionVertex[] vertices =
+                graph.getVerticesTopologically().iterator().next().getTaskVertices();
+        assertEquals(vertices.length, graph.getRegisteredExecutions().size());
 
-		exec.markFailed(new Exception("test"));
-		assertTrue(exec.getState() == ExecutionState.FAILED || exec.getState() == ExecutionState.CANCELED);
+        final Execution exec = vertices[3].getCurrentExecutionAttempt();
+        exec.cancel();
+        assertEquals(ExecutionState.CANCELING, exec.getState());
 
-		assertFalse(exec.getAssignedResource().isAlive());
-		assertEquals(vertices.length - 1, exec.getVertex().getExecutionGraph().getRegisteredExecutions().size());
-	}
+        exec.markFailed(new Exception("test"));
+        assertTrue(
+                exec.getState() == ExecutionState.FAILED
+                        || exec.getState() == ExecutionState.CANCELED);
 
-	private static class CancelSequenceSimpleAckingTaskManagerGateway extends SimpleAckingTaskManagerGateway {
-		private final int successfulOperations;
-		private int index = -1;
+        assertFalse(exec.getAssignedResource().isAlive());
+        assertEquals(vertices.length - 1, graph.getRegisteredExecutions().size());
+    }
 
-		public CancelSequenceSimpleAckingTaskManagerGateway(int successfulOperations) {
-			super();
-			this.successfulOperations = successfulOperations;
-		}
+    private static class CancelSequenceSimpleAckingTaskManagerGateway
+            extends SimpleAckingTaskManagerGateway {
+        private final int successfulOperations;
+        private int index = -1;
 
-		@Override
-		public CompletableFuture<Acknowledge> cancelTask(ExecutionAttemptID executionAttemptID, Time timeout) {
-			index++;
+        public CancelSequenceSimpleAckingTaskManagerGateway(int successfulOperations) {
+            super();
+            this.successfulOperations = successfulOperations;
+        }
 
-			if (index >= successfulOperations) {
-				return FutureUtils.completedExceptionally(new IOException("Rpc call fails"));
-			} else {
-				return CompletableFuture.completedFuture(Acknowledge.get());
-			}
-		}
-	}
+        @Override
+        public CompletableFuture<Acknowledge> cancelTask(
+                ExecutionAttemptID executionAttemptID, Time timeout) {
+            index++;
+
+            if (index >= successfulOperations) {
+                return FutureUtils.completedExceptionally(new IOException("Rpc call fails"));
+            } else {
+                return CompletableFuture.completedFuture(Acknowledge.get());
+            }
+        }
+    }
 }

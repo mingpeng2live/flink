@@ -20,31 +20,29 @@ package org.apache.flink.runtime.leaderelection;
 
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.CuratorFramework;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFramework;
 
 /**
  * {@link LeaderElectionDriverFactory} implementation for Zookeeper.
+ *
+ * @deprecated in favour of {@link ZooKeeperMultipleComponentLeaderElectionDriverFactory}
  */
 public class ZooKeeperLeaderElectionDriverFactory implements LeaderElectionDriverFactory {
 
-	private final CuratorFramework client;
+    private final CuratorFramework client;
 
-	private final String latchPath;
+    private final String path;
 
-	private final String leaderPath;
+    public ZooKeeperLeaderElectionDriverFactory(CuratorFramework client, String path) {
+        this.client = client;
+        this.path = path;
+    }
 
-	public ZooKeeperLeaderElectionDriverFactory(CuratorFramework client, String latchPath, String leaderPath) {
-		this.client = client;
-		this.latchPath = latchPath;
-		this.leaderPath = leaderPath;
-	}
-
-	@Override
-	public ZooKeeperLeaderElectionDriver createLeaderElectionDriver(
-			LeaderElectionEventHandler leaderEventHandler,
-			FatalErrorHandler fatalErrorHandler,
-			String leaderContenderDescription) throws Exception {
-		return new ZooKeeperLeaderElectionDriver(
-			client, latchPath, leaderPath, leaderEventHandler, fatalErrorHandler, leaderContenderDescription);
-	}
+    @Override
+    public ZooKeeperLeaderElectionDriver createLeaderElectionDriver(
+            LeaderElectionEventHandler leaderEventHandler, FatalErrorHandler fatalErrorHandler)
+            throws Exception {
+        return new ZooKeeperLeaderElectionDriver(
+                client, path, leaderEventHandler, fatalErrorHandler);
+    }
 }

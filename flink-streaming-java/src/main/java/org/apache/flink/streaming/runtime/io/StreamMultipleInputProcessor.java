@@ -19,7 +19,7 @@
 package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.core.io.InputStatus;
+import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.streaming.api.operators.InputSelection;
 import org.apache.flink.streaming.api.operators.MultipleInputStreamOperator;
@@ -28,129 +28,132 @@ import org.apache.flink.util.ExceptionUtils;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
-import static org.apache.flink.runtime.concurrent.FutureUtils.assertNoException;
-
-/**
- * Input processor for {@link MultipleInputStreamOperator}.
- */
+/** Input processor for {@link MultipleInputStreamOperator}. */
 @Internal
 public final class StreamMultipleInputProcessor implements StreamInputProcessor {
 
-	private final MultipleInputSelectionHandler inputSelectionHandler;
+    private final MultipleInputSelectionHandler inputSelectionHandler;
 
-	private final StreamOneInputProcessor<?>[] inputProcessors;
-	/** Always try to read from the first input. */
-	private int lastReadInputIndex = 1;
+    private final StreamOneInputProcessor<?>[] inputProcessors;
 
-	private boolean isPrepared;
+    private final MultipleFuturesAvailabilityHelper availabilityHelper;
+    /** Always try to read from the first input. */
+    private int lastReadInputIndex = 1;
 
-	public StreamMultipleInputProcessor(
-			MultipleInputSelectionHandler inputSelectionHandler,
-			StreamOneInputProcessor<?>[] inputProcessors) {
-		this.inputSelectionHandler = inputSelectionHandler;
-		this.inputProcessors = inputProcessors;
-	}
+    private boolean isPrepared;
 
-	@Override
-	public CompletableFuture<?> getAvailableFuture() {
-		if (inputSelectionHandler.isAnyInputAvailable() || inputSelectionHandler.areAllInputsFinished()) {
-			return AVAILABLE;
-		}
-		final CompletableFuture<?> anyInputAvailable = new CompletableFuture<>();
-		for (int i = 0; i < inputProcessors.length; i++) {
-			if (!inputSelectionHandler.isInputFinished(i) && inputSelectionHandler.isInputSelected(i)) {
-				assertNoException(inputProcessors[i].getAvailableFuture().thenRun(() -> anyInputAvailable.complete(null)));
-			}
-		}
-		return anyInputAvailable;
-	}
+    public StreamMultipleInputProcessor(
+            MultipleInputSelectionHandler inputSelectionHandler,
+            StreamOneInputProcessor<?>[] inputProcessors) {
+        this.inputSelectionHandler = inputSelectionHandler;
+        this.inputProcessors = inputProcessors;
+        this.availabilityHelper = new MultipleFuturesAvailabilityHelper(inputProcessors.length);
+    }
 
-	@Override
-	public InputStatus processInput() throws Exception {
-		int readingInputIndex;
-		if (isPrepared) {
-			readingInputIndex = selectNextReadingInputIndex();
-		} else {
-			// the preparations here are not placed in the constructor because all work in it
-			// must be executed after all operators are opened.
-			readingInputIndex = selectFirstReadingInputIndex();
-		}
-		if (readingInputIndex == InputSelection.NONE_AVAILABLE) {
-			return InputStatus.NOTHING_AVAILABLE;
-		}
+    @Override
+    public CompletableFuture<?> getAvailableFuture() {
+        if (inputSelectionHandler.isAnyInputAvailable()
+                || inputSelectionHandler.areAllInputsFinished()) {
+            return AVAILABLE;
+        }
 
-		lastReadInputIndex = readingInputIndex;
-		InputStatus inputStatus = inputProcessors[readingInputIndex].processInput();
-		inputSelectionHandler.nextSelection();
-		return inputSelectionHandler.updateStatus(inputStatus, readingInputIndex);
-	}
+        availabilityHelper.resetToUnAvailable();
+        for (int i = 0; i < inputProcessors.length; i++) {
+            if (!inputSelectionHandler.isInputFinished(i)
+                    && inputSelectionHandler.isInputSelected(i)) {
+                availabilityHelper.anyOf(i, inputProcessors[i].getAvailableFuture());
+            }
+        }
+        return availabilityHelper.getAvailableFuture();
+    }
 
-	private int selectFirstReadingInputIndex() {
-		// Note: the first call to nextSelection () on the operator must be made after this operator
-		// is opened to ensure that any changes about the input selection in its open()
-		// method take effect.
-		inputSelectionHandler.nextSelection();
+    @Override
+    public DataInputStatus processInput() throws Exception {
+        int readingInputIndex;
+        if (isPrepared) {
+            readingInputIndex = selectNextReadingInputIndex();
+        } else {
+            // the preparations here are not placed in the constructor because all work in it
+            // must be executed after all operators are opened.
+            readingInputIndex = selectFirstReadingInputIndex();
+        }
+        if (readingInputIndex == InputSelection.NONE_AVAILABLE) {
+            return DataInputStatus.NOTHING_AVAILABLE;
+        }
 
-		isPrepared = true;
+        lastReadInputIndex = readingInputIndex;
+        DataInputStatus inputStatus = inputProcessors[readingInputIndex].processInput();
+        return inputSelectionHandler.updateStatusAndSelection(inputStatus, readingInputIndex);
+    }
 
-		return selectNextReadingInputIndex();
-	}
+    private int selectFirstReadingInputIndex() {
+        // Note: the first call to nextSelection () on the operator must be made after this operator
+        // is opened to ensure that any changes about the input selection in its open()
+        // method take effect.
+        inputSelectionHandler.nextSelection();
 
-	@Override
-	public void close() throws IOException {
-		IOException ex = null;
-		for (StreamOneInputProcessor<?> input : inputProcessors) {
-			try {
-				input.close();
-			} catch (IOException e) {
-				ex = ExceptionUtils.firstOrSuppressed(e, ex);
-			}
-		}
+        isPrepared = true;
 
-		if (ex != null) {
-			throw ex;
-		}
-	}
+        return selectNextReadingInputIndex();
+    }
 
-	@Override
-	public CompletableFuture<Void> prepareSnapshot(
-			ChannelStateWriter channelStateWriter,
-			long checkpointId) throws IOException {
-		CompletableFuture<?>[] inputFutures = new CompletableFuture[inputProcessors.length];
-		for (int index = 0; index < inputFutures.length; index++) {
-			inputFutures[index] = inputProcessors[index].prepareSnapshot(channelStateWriter, checkpointId);
-		}
-		return CompletableFuture.allOf(inputFutures);
-	}
+    @Override
+    public void close() throws IOException {
+        IOException ex = null;
+        for (StreamOneInputProcessor<?> input : inputProcessors) {
+            try {
+                input.close();
+            } catch (IOException e) {
+                ex = ExceptionUtils.firstOrSuppressed(e, ex);
+            }
+        }
 
-	private int selectNextReadingInputIndex() {
-		if (!inputSelectionHandler.isAnyInputAvailable()) {
-			fullCheckAndSetAvailable();
-		}
+        if (ex != null) {
+            throw ex;
+        }
+    }
 
-		int readingInputIndex = inputSelectionHandler.selectNextInputIndex(lastReadInputIndex);
-		if (readingInputIndex == InputSelection.NONE_AVAILABLE) {
-			return InputSelection.NONE_AVAILABLE;
-		}
+    @Override
+    public CompletableFuture<Void> prepareSnapshot(
+            ChannelStateWriter channelStateWriter, long checkpointId) throws CheckpointException {
+        CompletableFuture<?>[] inputFutures = new CompletableFuture[inputProcessors.length];
+        for (int index = 0; index < inputFutures.length; index++) {
+            inputFutures[index] =
+                    inputProcessors[index].prepareSnapshot(channelStateWriter, checkpointId);
+        }
+        return CompletableFuture.allOf(inputFutures);
+    }
 
-		// to avoid starvation, if the input selection is ALL and availableInputsMask is not ALL,
-		// always try to check and set the availability of another input
-		if (inputSelectionHandler.shouldSetAvailableForAnotherInput()) {
-			fullCheckAndSetAvailable();
-		}
+    private int selectNextReadingInputIndex() {
+        if (!inputSelectionHandler.isAnyInputAvailable()) {
+            fullCheckAndSetAvailable();
+        }
 
-		return readingInputIndex;
-	}
+        int readingInputIndex = inputSelectionHandler.selectNextInputIndex(lastReadInputIndex);
+        if (readingInputIndex == InputSelection.NONE_AVAILABLE) {
+            return InputSelection.NONE_AVAILABLE;
+        }
 
-	private void fullCheckAndSetAvailable() {
-		for (int i = 0; i < inputProcessors.length; i++) {
-			StreamOneInputProcessor<?> inputProcessor = inputProcessors[i];
-			// TODO: isAvailable() can be a costly operation (checking volatile). If one of
-			// the input is constantly available and another is not, we will be checking this volatile
-			// once per every record. This might be optimized to only check once per processed NetworkBuffer
-			if (inputProcessor.isApproximatelyAvailable() || inputProcessor.isAvailable()) {
-				inputSelectionHandler.setAvailableInput(i);
-			}
-		}
-	}
+        // to avoid starvation, if the input selection is ALL and availableInputsMask is not ALL,
+        // always try to check and set the availability of another input
+        if (inputSelectionHandler.shouldSetAvailableForAnotherInput()) {
+            fullCheckAndSetAvailable();
+        }
+
+        return readingInputIndex;
+    }
+
+    private void fullCheckAndSetAvailable() {
+        for (int i = 0; i < inputProcessors.length; i++) {
+            StreamOneInputProcessor<?> inputProcessor = inputProcessors[i];
+            // TODO: isAvailable() can be a costly operation (checking volatile). If one of
+            // the input is constantly available and another is not, we will be checking this
+            // volatile
+            // once per every record. This might be optimized to only check once per processed
+            // NetworkBuffer
+            if (inputProcessor.isApproximatelyAvailable() || inputProcessor.isAvailable()) {
+                inputSelectionHandler.setAvailableInput(i);
+            }
+        }
+    }
 }

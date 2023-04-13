@@ -19,52 +19,60 @@
 package org.apache.flink.streaming.api.functions.sink.filesystem;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.core.fs.Path;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 
-/**
- * The {@link Bucket} uses the {@link InProgressFileWriter} to write element to a part file.
- */
+/** The {@link Bucket} uses the {@link InProgressFileWriter} to write element to a part file. */
 @Internal
-public interface InProgressFileWriter<IN, BucketID> extends PartFileInfo<BucketID> {
+public interface InProgressFileWriter<IN, BucketID>
+        extends PartFileInfo<BucketID>, RecordWiseCompactingFileWriter<IN> {
 
-	/**
-	 * Write a element to the part file.
-	 * @param element the element to be written.
-	 * @param currentTime the writing time.
-	 * @throws IOException Thrown if writing the element fails.
-	 */
-	void write(final IN element, final long currentTime) throws IOException;
+    /**
+     * Write an element to the part file.
+     *
+     * @param element the element to be written.
+     * @param currentTime the writing time.
+     * @throws IOException Thrown if writing the element fails.
+     */
+    void write(final IN element, final long currentTime) throws IOException;
 
-	/**
-	 * @return The state of the current part file.
-	 * @throws IOException Thrown if persisting the part file fails.
-	 */
-	InProgressFileRecoverable persist() throws IOException;
+    /**
+     * @return The state of the current part file.
+     * @throws IOException Thrown if persisting the part file fails.
+     */
+    InProgressFileRecoverable persist() throws IOException;
 
+    /**
+     * @return The state of the pending part file. {@link Bucket} uses this to commit the pending
+     *     file.
+     * @throws IOException Thrown if an I/O error occurs.
+     */
+    PendingFileRecoverable closeForCommit() throws IOException;
 
-	/**
-	 * @return The state of the pending part file. {@link Bucket} uses this to commit the pending file.
-	 * @throws IOException Thrown if an I/O error occurs.
-	 */
-	PendingFileRecoverable closeForCommit() throws IOException;
+    /** Dispose the part file. */
+    void dispose();
 
-	/**
-	 * Dispose the part file.
-	 */
-	void dispose();
+    @Override
+    default void write(IN element) throws IOException {
+        write(element, System.currentTimeMillis());
+    }
 
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
+    /** A handle can be used to recover in-progress file.. */
+    interface InProgressFileRecoverable extends PendingFileRecoverable {}
 
-	 /**
-	 * A handle can be used to recover in-progress file..
-	 */
-	interface InProgressFileRecoverable extends PendingFileRecoverable {}
+    /** The handle can be used to recover pending file. */
+    interface PendingFileRecoverable {
 
+        /** @return The target path of the pending file, null if unavailable. */
+        @Nullable
+        Path getPath();
 
-	/**
-	 * The handle can be used to recover pending file.
-	 */
-	interface PendingFileRecoverable {}
+        /** @return The size of the pending file, -1 if unavailable. */
+        long getSize();
+    }
 }

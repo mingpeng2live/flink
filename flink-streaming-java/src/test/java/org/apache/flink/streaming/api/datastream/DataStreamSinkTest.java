@@ -17,30 +17,29 @@
 
 package org.apache.flink.streaming.api.datastream;
 
+import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.transformations.SinkTransformation;
 import org.apache.flink.streaming.runtime.operators.sink.TestSink;
 
 import org.junit.Test;
 
-/**
- * Unit test for {@link DataStreamSink}.
- */
+import static org.junit.Assert.assertTrue;
+
+/** Unit test for {@link DataStreamSink}. */
 public class DataStreamSinkTest {
 
-	@Test(expected = IllegalStateException.class)
-	public void throwExceptionWhenGettingTransformationWithNewSinkAPI() {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.fromElements(1, 2)
-				.sinkTo(TestSink.newBuilder().build())
-				.getTransformation();
+    @Test
+    public void testGettingTransformationWithNewSinkAPI() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        final Transformation<?> transformation =
+                env.fromElements(1, 2).sinkTo(TestSink.newBuilder().build()).getTransformation();
+        assertTrue(transformation instanceof SinkTransformation);
+    }
 
-	}
-
-	@Test(expected = UnsupportedOperationException.class)
-	public void throwExceptionWhenSetUidWithNewSinkAPI() {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.fromElements(1, 2)
-				.sinkTo(TestSink.newBuilder().build())
-				.setUidHash("Test");
-	}
+    @Test(expected = UnsupportedOperationException.class)
+    public void throwExceptionWhenSetUidWithNewSinkAPI() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.fromElements(1, 2).sinkTo(TestSink.newBuilder().build()).setUidHash("Test");
+    }
 }

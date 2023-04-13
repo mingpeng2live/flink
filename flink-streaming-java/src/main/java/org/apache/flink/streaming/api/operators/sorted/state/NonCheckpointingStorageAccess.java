@@ -18,6 +18,8 @@
 
 package org.apache.flink.streaming.api.operators.sorted.state;
 
+import org.apache.flink.runtime.state.CheckpointStateOutputStream;
+import org.apache.flink.runtime.state.CheckpointStateToolset;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
 import org.apache.flink.runtime.state.CheckpointStorageLocation;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
@@ -26,51 +28,56 @@ import org.apache.flink.runtime.state.CompletedCheckpointStorageLocation;
 
 import javax.annotation.Nullable;
 
-/**
- * A dummy {@link CheckpointStorageAccess} which does not perform checkpoints.
- */
+/** A dummy {@link CheckpointStorageAccess} which does not perform checkpoints. */
 class NonCheckpointingStorageAccess implements CheckpointStorageAccess {
-	@Override
-	public boolean supportsHighlyAvailableStorage() {
-		return false;
-	}
+    @Override
+    public boolean supportsHighlyAvailableStorage() {
+        return false;
+    }
 
-	@Override
-	public boolean hasDefaultSavepointLocation() {
-		return false;
-	}
+    @Override
+    public boolean hasDefaultSavepointLocation() {
+        return false;
+    }
 
-	@Override
-	public CompletedCheckpointStorageLocation resolveCheckpoint(String externalPointer) {
-		throw new UnsupportedOperationException("Checkpoints are not supported in a single key state backend");
-	}
+    @Override
+    public CompletedCheckpointStorageLocation resolveCheckpoint(String externalPointer) {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 
-	@Override
-	public void initializeBaseLocations() {
+    @Override
+    public void initializeBaseLocationsForCheckpoint() {}
 
-	}
+    @Override
+    public CheckpointStorageLocation initializeLocationForCheckpoint(long checkpointId) {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 
-	@Override
-	public CheckpointStorageLocation initializeLocationForCheckpoint(long checkpointId) {
-		throw new UnsupportedOperationException("Checkpoints are not supported in a single key state backend");
-	}
+    @Override
+    public CheckpointStorageLocation initializeLocationForSavepoint(
+            long checkpointId, @Nullable String externalLocationPointer) {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 
-	@Override
-	public CheckpointStorageLocation initializeLocationForSavepoint(
-			long checkpointId,
-			@Nullable String externalLocationPointer) {
-		throw new UnsupportedOperationException("Checkpoints are not supported in a single key state backend");
-	}
+    @Override
+    public CheckpointStreamFactory resolveCheckpointStorageLocation(
+            long checkpointId, CheckpointStorageLocationReference reference) {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 
-	@Override
-	public CheckpointStreamFactory resolveCheckpointStorageLocation(
-			long checkpointId,
-			CheckpointStorageLocationReference reference) {
-		throw new UnsupportedOperationException("Checkpoints are not supported in a single key state backend");
-	}
+    @Override
+    public CheckpointStateOutputStream createTaskOwnedStateStream() {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 
-	@Override
-	public CheckpointStreamFactory.CheckpointStateOutputStream createTaskOwnedStateStream() {
-		throw new UnsupportedOperationException("Checkpoints are not supported in a single key state backend");
-	}
+    @Override
+    public CheckpointStateToolset createTaskOwnedCheckpointStateToolset() {
+        throw new UnsupportedOperationException(
+                "Checkpoints are not supported in a single key state backend");
+    }
 }

@@ -23,49 +23,45 @@ import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.RestOptions;
 
 import org.apache.commons.cli.CommandLine;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for the {@link DefaultCLI}.
- */
-public class DefaultCLITest {
+/** Tests for the {@link DefaultCLI}. */
+class DefaultCLITest {
 
-	/**
-	 * Verifies command line options are correctly materialized.
-	 */
-	@Test
-	public void testCommandLineMaterialization() throws Exception {
-		final String hostname = "home-sweet-home";
-		final int port = 1234;
-		final String[] args = {"-m", hostname + ':' + port};
+    /** Verifies command line options are correctly materialized. */
+    @Test
+    void testCommandLineMaterialization() throws Exception {
+        final String hostname = "home-sweet-home";
+        final int port = 1234;
+        final String[] args = {"-m", hostname + ':' + port};
 
-		final AbstractCustomCommandLine defaultCLI = new DefaultCLI();
-		final CommandLine commandLine = defaultCLI.parseCommandLineOptions(args, false);
+        final AbstractCustomCommandLine defaultCLI = new DefaultCLI();
+        final CommandLine commandLine = defaultCLI.parseCommandLineOptions(args, false);
 
-		Configuration configuration = defaultCLI.toConfiguration(commandLine);
+        Configuration configuration = defaultCLI.toConfiguration(commandLine);
 
-		assertThat(configuration.get(RestOptions.ADDRESS), is(hostname));
-		assertThat(configuration.get(RestOptions.PORT), is(port));
-	}
+        assertThat(configuration.get(RestOptions.ADDRESS)).isEqualTo(hostname);
+        assertThat(configuration.get(RestOptions.PORT)).isEqualTo(port);
+    }
 
-	@Test
-	public void testDynamicPropertyMaterialization() throws Exception {
-		final String[] args = {
-				"-D" + PipelineOptions.AUTO_WATERMARK_INTERVAL.key() + "=42",
-				"-D" + PipelineOptions.AUTO_GENERATE_UIDS.key() + "=true"
-		};
+    @Test
+    void testDynamicPropertyMaterialization() throws Exception {
+        final String[] args = {
+            "-D" + PipelineOptions.AUTO_WATERMARK_INTERVAL.key() + "=42",
+            "-D" + PipelineOptions.AUTO_GENERATE_UIDS.key() + "=true"
+        };
 
-		final AbstractCustomCommandLine defaultCLI = new DefaultCLI();
-		final CommandLine commandLine = defaultCLI.parseCommandLineOptions(args, false);
+        final AbstractCustomCommandLine defaultCLI = new DefaultCLI();
+        final CommandLine commandLine = defaultCLI.parseCommandLineOptions(args, false);
 
-		Configuration configuration = defaultCLI.toConfiguration(commandLine);
+        Configuration configuration = defaultCLI.toConfiguration(commandLine);
 
-		assertThat(configuration.get(PipelineOptions.AUTO_WATERMARK_INTERVAL), is(Duration.ofMillis(42L)));
-		assertThat(configuration.get(PipelineOptions.AUTO_GENERATE_UIDS), is(true));
-	}
+        assertThat(configuration.get(PipelineOptions.AUTO_WATERMARK_INTERVAL))
+                .isEqualTo(Duration.ofMillis(42L));
+        assertThat(configuration.get(PipelineOptions.AUTO_GENERATE_UIDS)).isTrue();
+    }
 }

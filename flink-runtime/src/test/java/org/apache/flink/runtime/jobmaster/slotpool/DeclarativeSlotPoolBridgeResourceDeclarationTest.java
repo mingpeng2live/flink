@@ -26,13 +26,19 @@ import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
+import org.apache.flink.runtime.util.ResourceCounter;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
+import java.io.IOException;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -43,141 +49,199 @@ import static org.apache.flink.runtime.jobmaster.slotpool.DeclarativeSlotPoolBri
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
 
-/**
- * Tests for the {@link DeclarativeSlotPoolBridge}.
- */
+/** Tests for the {@link DeclarativeSlotPoolBridge}. */
+@RunWith(Parameterized.class)
 public class DeclarativeSlotPoolBridgeResourceDeclarationTest extends TestLogger {
 
-	private static final JobMasterId jobMasterId = JobMasterId.generate();
-	private final ComponentMainThreadExecutor mainThreadExecutor = ComponentMainThreadExecutorServiceAdapter.forMainThread();
+    private static final JobMasterId jobMasterId = JobMasterId.generate();
+    private final ComponentMainThreadExecutor mainThreadExecutor =
+            ComponentMainThreadExecutorServiceAdapter.forMainThread();
+    private final RequestSlotMatchingStrategy requestSlotMatchingStrategy;
 
-	private RequirementListener requirementListener;
-	private DeclarativeSlotPoolBridge declarativeSlotPoolBridge;
+    private RequirementListener requirementListener;
+    private DeclarativeSlotPoolBridge declarativeSlotPoolBridge;
 
-	@Before
-	public void setup() throws Exception {
-		requirementListener = new RequirementListener();
+    @Parameterized.Parameters(name = "RequestSlotMatchingStrategy: {0}")
+    public static Collection<RequestSlotMatchingStrategy> data() throws IOException {
+        return Arrays.asList(
+                SimpleRequestSlotMatchingStrategy.INSTANCE,
+                PreferredAllocationRequestSlotMatchingStrategy.INSTANCE);
+    }
 
-		final TestingDeclarativeSlotPoolBuilder slotPoolBuilder = TestingDeclarativeSlotPool.builder()
-			.setIncreaseResourceRequirementsByConsumer(requirementListener::increaseRequirements)
-			.setDecreaseResourceRequirementsByConsumer(requirementListener::decreaseRequirements)
-			.setReserveFreeSlotFunction((allocationId, resourceProfile) -> createAllocatedSlot(allocationId))
-			.setFreeReservedSlotFunction((allocationID, throwable, aLong) -> ResourceCounter.withResource(ResourceProfile.UNKNOWN, 1))
-			.setReleaseSlotFunction((allocationID, e) -> ResourceCounter.withResource(ResourceProfile.UNKNOWN, 1));
+    public DeclarativeSlotPoolBridgeResourceDeclarationTest(
+            RequestSlotMatchingStrategy requestSlotMatchingStrategy) {
+        this.requestSlotMatchingStrategy = requestSlotMatchingStrategy;
+    }
 
-		final DeclarativeSlotPoolBridgeTest.TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory = new DeclarativeSlotPoolBridgeTest.TestingDeclarativeSlotPoolFactory(slotPoolBuilder);
-		declarativeSlotPoolBridge = createDeclarativeSlotPoolBridge(declarativeSlotPoolFactory);
-	}
+    @Before
+    public void setup() throws Exception {
+        requirementListener = new RequirementListener();
 
-	@After
-	public void teardown() throws Exception {
-		if (declarativeSlotPoolBridge != null) {
-			declarativeSlotPoolBridge.close();
-		}
-	}
+        final TestingDeclarativeSlotPoolBuilder slotPoolBuilder =
+                TestingDeclarativeSlotPool.builder()
+                        .setIncreaseResourceRequirementsByConsumer(
+                                requirementListener::increaseRequirements)
+                        .setDecreaseResourceRequirementsByConsumer(
+                                requirementListener::decreaseRequirements)
+                        .setReserveFreeSlotFunction(
+                                (allocationId, resourceProfile) ->
+                                        createAllocatedSlot(allocationId))
+                        .setFreeReservedSlotFunction(
+                                (allocationID, throwable, aLong) ->
+                                        ResourceCounter.withResource(ResourceProfile.UNKNOWN, 1))
+                        .setReleaseSlotFunction(
+                                (allocationID, e) ->
+                                        ResourceCounter.withResource(ResourceProfile.UNKNOWN, 1));
 
-	@Test
-	public void testRequirementsIncreasedOnNewAllocation() throws Exception {
-		declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+        final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory =
+                new TestingDeclarativeSlotPoolFactory(slotPoolBuilder);
+        declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        declarativeSlotPoolFactory, requestSlotMatchingStrategy);
+    }
 
-		// requesting the allocation of a new slot should increase the requirements
-		declarativeSlotPoolBridge.requestNewAllocatedSlot(new SlotRequestId(), ResourceProfile.UNKNOWN, Time.minutes(5));
-		assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(1));
-	}
+    @After
+    public void teardown() throws Exception {
+        if (declarativeSlotPoolBridge != null) {
+            declarativeSlotPoolBridge.close();
+        }
+    }
 
-	@Test
-	public void testRequirementsDecreasedOnAllocationTimeout() throws Exception {
-		final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
-		try {
-			ComponentMainThreadExecutor mainThreadExecutor = ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(scheduledExecutorService);
-			declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+    @Test
+    public void testRequirementsIncreasedOnNewAllocation() throws Exception {
+        declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			// requesting the allocation of a new slot increases the requirements
-			final CompletableFuture<PhysicalSlot> allocationFuture = CompletableFuture.supplyAsync(
-					() -> declarativeSlotPoolBridge.requestNewAllocatedSlot(new SlotRequestId(), ResourceProfile.UNKNOWN, Time.milliseconds(5)),
-					mainThreadExecutor)
-				.get();
+        // requesting the allocation of a new slot should increase the requirements
+        declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                new SlotRequestId(), ResourceProfile.UNKNOWN, Time.minutes(5));
+        assertThat(
+                requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN),
+                is(1));
+    }
 
-			// waiting for the timeout
-			assertThat(allocationFuture, FlinkMatchers.futureWillCompleteExceptionally(Duration.ofMinutes(1)));
+    @Test
+    public void testRequirementsDecreasedOnAllocationTimeout() throws Exception {
+        final ScheduledExecutorService scheduledExecutorService =
+                Executors.newSingleThreadScheduledExecutor();
+        try {
+            ComponentMainThreadExecutor mainThreadExecutor =
+                    ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(
+                            scheduledExecutorService);
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			// when the allocation fails the requirements should be reduced (it is the users responsibility to retry)
-			CompletableFuture.runAsync(
-					() -> assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(0)),
-					mainThreadExecutor)
-				.join();
-		} finally {
-			scheduledExecutorService.shutdown();
-		}
-	}
+            // requesting the allocation of a new slot increases the requirements
+            final CompletableFuture<PhysicalSlot> allocationFuture =
+                    CompletableFuture.supplyAsync(
+                                    () ->
+                                            declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                                                    new SlotRequestId(),
+                                                    ResourceProfile.UNKNOWN,
+                                                    Time.milliseconds(5)),
+                                    mainThreadExecutor)
+                            .get();
 
-	@Test
-	public void testRequirementsUnchangedOnNewSlotsNotification() throws Exception {
-		declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+            // waiting for the timeout
+            assertThat(
+                    allocationFuture,
+                    FlinkMatchers.futureWillCompleteExceptionally(Duration.ofMinutes(1)));
 
-		// notifications about new slots should not affect requirements
-		final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
-		declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
-		assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(0));
-	}
+            // when the allocation fails the requirements should be reduced (it is the users
+            // responsibility to retry)
+            CompletableFuture.runAsync(
+                            () ->
+                                    assertThat(
+                                            requirementListener
+                                                    .getRequirements()
+                                                    .getResourceCount(ResourceProfile.UNKNOWN),
+                                            is(0)),
+                            mainThreadExecutor)
+                    .join();
+        } finally {
+            scheduledExecutorService.shutdown();
+        }
+    }
 
-	@Test
-	public void testRequirementsIncreasedOnSlotReservation() throws Exception {
-		declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+    @Test
+    public void testRequirementsUnchangedOnNewSlotsNotification() throws Exception {
+        declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-		final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
-		declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
+        // notifications about new slots should not affect requirements
+        final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
+        declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
+        assertThat(
+                requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN),
+                is(0));
+    }
 
-		// allocating (==reserving) an available (==free) slot should increase the requirements
-		final SlotRequestId slotRequestId = new SlotRequestId();
-		declarativeSlotPoolBridge.allocateAvailableSlot(slotRequestId, newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
-		assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(1));
-	}
+    @Test
+    public void testRequirementsIncreasedOnSlotReservation() throws Exception {
+        declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-	@Test
-	public void testRequirementsDecreasedOnSlotFreeing() throws Exception {
-		declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+        final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
+        declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
 
-		final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
-		declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
+        // allocating (==reserving) an available (==free) slot should increase the requirements
+        final SlotRequestId slotRequestId = new SlotRequestId();
+        declarativeSlotPoolBridge.allocateAvailableSlot(
+                slotRequestId, newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
+        assertThat(
+                requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN),
+                is(1));
+    }
 
-		final SlotRequestId slotRequestId = new SlotRequestId();
-		declarativeSlotPoolBridge.allocateAvailableSlot(slotRequestId, newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
+    @Test
+    public void testRequirementsDecreasedOnSlotFreeing() throws Exception {
+        declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-		// releasing (==freeing) a [reserved] slot should decrease the requirements
-		declarativeSlotPoolBridge.releaseSlot(slotRequestId, new RuntimeException("Test exception"));
-		assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(0));
-	}
+        final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
+        declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
 
-	@Test
-	public void testRequirementsDecreasedOnSlotAllocationFailure() throws Exception {
-		declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+        final SlotRequestId slotRequestId = new SlotRequestId();
+        declarativeSlotPoolBridge.allocateAvailableSlot(
+                slotRequestId, newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
 
-		final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
-		declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
+        // releasing (==freeing) a [reserved] slot should decrease the requirements
+        declarativeSlotPoolBridge.releaseSlot(
+                slotRequestId, new RuntimeException("Test exception"));
+        assertThat(
+                requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN),
+                is(0));
+    }
 
-		declarativeSlotPoolBridge.allocateAvailableSlot(new SlotRequestId(), newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
+    @Test
+    public void testRequirementsDecreasedOnSlotAllocationFailure() throws Exception {
+        declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-		// releasing (==freeing) a [reserved] slot should decrease the requirements
-		declarativeSlotPoolBridge.failAllocation(newSlot.getTaskManagerLocation().getResourceID(), newSlot.getAllocationId(), new RuntimeException("Test exception"));
-		assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN), is(0));
-	}
+        final PhysicalSlot newSlot = createAllocatedSlot(new AllocationID());
+        declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(newSlot));
 
-	private static final class RequirementListener {
+        declarativeSlotPoolBridge.allocateAvailableSlot(
+                new SlotRequestId(), newSlot.getAllocationId(), ResourceProfile.UNKNOWN);
 
-		private ResourceCounter requirements = ResourceCounter.empty();
+        // releasing (==freeing) a [reserved] slot should decrease the requirements
+        declarativeSlotPoolBridge.failAllocation(
+                newSlot.getTaskManagerLocation().getResourceID(),
+                newSlot.getAllocationId(),
+                new RuntimeException("Test exception"));
+        assertThat(
+                requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN),
+                is(0));
+    }
 
-		private void increaseRequirements(ResourceCounter requirements) {
-			this.requirements = this.requirements.add(requirements);
-		}
+    private static final class RequirementListener {
 
-		private void decreaseRequirements(ResourceCounter requirements) {
-			this.requirements = this.requirements.subtract(requirements);
-		}
+        private ResourceCounter requirements = ResourceCounter.empty();
 
-		public ResourceCounter getRequirements() {
-			return requirements;
-		}
-	}
+        private void increaseRequirements(ResourceCounter requirements) {
+            this.requirements = this.requirements.add(requirements);
+        }
 
+        private void decreaseRequirements(ResourceCounter requirements) {
+            this.requirements = this.requirements.subtract(requirements);
+        }
+
+        public ResourceCounter getRequirements() {
+            return requirements;
+        }
+    }
 }

@@ -20,16 +20,16 @@ package org.apache.flink.streaming.runtime.tasks;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.SimpleCounter;
-import org.apache.flink.runtime.metrics.groups.OperatorIOMetricGroup;
-import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
+import org.apache.flink.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.streaming.api.operators.Input;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.io.RecordProcessorUtils;
 import org.apache.flink.streaming.runtime.metrics.WatermarkGauge;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatusProvider;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.OutputTag;
+import org.apache.flink.util.function.ThrowingConsumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,122 +37,107 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 class ChainingOutput<T> implements WatermarkGaugeExposingOutput<StreamRecord<T>> {
-	private static final Logger LOG = LoggerFactory.getLogger(ChainingOutput.class);
+    private static final Logger LOG = LoggerFactory.getLogger(ChainingOutput.class);
 
-	protected final Input<T> input;
-	protected final Counter numRecordsIn;
-	protected final WatermarkGauge watermarkGauge = new WatermarkGauge();
-	protected final StreamStatusProvider streamStatusProvider;
-	@Nullable protected final OutputTag<T> outputTag;
-	@Nullable protected final AutoCloseable closeable;
+    protected final Input<T> input;
+    protected final Counter numRecordsOut;
+    protected final Counter numRecordsIn;
+    protected final WatermarkGauge watermarkGauge = new WatermarkGauge();
+    @Nullable protected final OutputTag<T> outputTag;
+    protected WatermarkStatus announcedStatus = WatermarkStatus.ACTIVE;
+    protected final ThrowingConsumer<StreamRecord<T>, Exception> recordProcessor;
 
-	public ChainingOutput(
-			OneInputStreamOperator<T, ?> operator,
-			StreamStatusProvider streamStatusProvider,
-			@Nullable OutputTag<T> outputTag) {
-		this(
-			operator,
-			(OperatorMetricGroup) operator.getMetricGroup(),
-			streamStatusProvider,
-			outputTag,
-			operator::close);
-	}
+    public ChainingOutput(
+            Input<T> input,
+            @Nullable Counter prevNumRecordsOut,
+            OperatorMetricGroup curOperatorMetricGroup,
+            @Nullable OutputTag<T> outputTag) {
+        this.input = input;
+        if (prevNumRecordsOut != null) {
+            this.numRecordsOut = prevNumRecordsOut;
+        } else {
+            // Uses a dummy counter here to avoid checking the existence of numRecordsOut on the
+            // per-record path.
+            this.numRecordsOut = new SimpleCounter();
+        }
+        this.numRecordsIn = curOperatorMetricGroup.getIOMetricGroup().getNumRecordsInCounter();
+        this.outputTag = outputTag;
+        this.recordProcessor = RecordProcessorUtils.getRecordProcessor(input);
+    }
 
-	public ChainingOutput(
-			Input<T> input,
-			OperatorMetricGroup operatorMetricGroup,
-			StreamStatusProvider streamStatusProvider,
-			@Nullable OutputTag<T> outputTag,
-			@Nullable AutoCloseable closeable) {
-		this.input = input;
-		this.closeable = closeable;
+    @Override
+    public void collect(StreamRecord<T> record) {
+        if (this.outputTag != null) {
+            // we are not responsible for emitting to the main output.
+            return;
+        }
 
-		{
-			Counter tmpNumRecordsIn;
-			try {
-				OperatorIOMetricGroup ioMetricGroup = operatorMetricGroup.getIOMetricGroup();
-				tmpNumRecordsIn = ioMetricGroup.getNumRecordsInCounter();
-			} catch (Exception e) {
-				LOG.warn("An exception occurred during the metrics setup.", e);
-				tmpNumRecordsIn = new SimpleCounter();
-			}
-			numRecordsIn = tmpNumRecordsIn;
-		}
+        pushToOperator(record);
+    }
 
-		this.streamStatusProvider = streamStatusProvider;
-		this.outputTag = outputTag;
-	}
+    @Override
+    public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
+        if (OutputTag.isResponsibleFor(this.outputTag, outputTag)) {
+            pushToOperator(record);
+        }
+    }
 
-	@Override
-	public void collect(StreamRecord<T> record) {
-		if (this.outputTag != null) {
-			// we are not responsible for emitting to the main output.
-			return;
-		}
+    protected <X> void pushToOperator(StreamRecord<X> record) {
+        try {
+            // we know that the given outputTag matches our OutputTag so the record
+            // must be of the type that our operator expects.
+            @SuppressWarnings("unchecked")
+            StreamRecord<T> castRecord = (StreamRecord<T>) record;
 
-		pushToOperator(record);
-	}
+            numRecordsOut.inc();
+            numRecordsIn.inc();
+            recordProcessor.accept(castRecord);
+        } catch (Exception e) {
+            throw new ExceptionInChainedOperatorException(e);
+        }
+    }
 
-	@Override
-	public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
-		if (OutputTag.isResponsibleFor(this.outputTag, outputTag)) {
-			pushToOperator(record);
-		}
-	}
+    @Override
+    public void emitWatermark(Watermark mark) {
+        if (announcedStatus.isIdle()) {
+            return;
+        }
+        try {
+            watermarkGauge.setCurrentWatermark(mark.getTimestamp());
+            input.processWatermark(mark);
+        } catch (Exception e) {
+            throw new ExceptionInChainedOperatorException(e);
+        }
+    }
 
-	protected <X> void pushToOperator(StreamRecord<X> record) {
-		try {
-			// we know that the given outputTag matches our OutputTag so the record
-			// must be of the type that our operator expects.
-			@SuppressWarnings("unchecked")
-			StreamRecord<T> castRecord = (StreamRecord<T>) record;
+    @Override
+    public void emitLatencyMarker(LatencyMarker latencyMarker) {
+        try {
+            input.processLatencyMarker(latencyMarker);
+        } catch (Exception e) {
+            throw new ExceptionInChainedOperatorException(e);
+        }
+    }
 
-			numRecordsIn.inc();
-			input.setKeyContextElement(castRecord);
-			input.processElement(castRecord);
-		}
-		catch (Exception e) {
-			throw new ExceptionInChainedOperatorException(e);
-		}
-	}
+    @Override
+    public void close() {
+        // nothing is owned by ChainingOutput and should be closed, see FLINK-20888
+    }
 
-	@Override
-	public void emitWatermark(Watermark mark) {
-		try {
-			watermarkGauge.setCurrentWatermark(mark.getTimestamp());
-			if (streamStatusProvider.getStreamStatus().isActive()) {
-				input.processWatermark(mark);
-			}
-		}
-		catch (Exception e) {
-			throw new ExceptionInChainedOperatorException(e);
-		}
-	}
+    @Override
+    public Gauge<Long> getWatermarkGauge() {
+        return watermarkGauge;
+    }
 
-	@Override
-	public void emitLatencyMarker(LatencyMarker latencyMarker) {
-		try {
-			input.processLatencyMarker(latencyMarker);
-		}
-		catch (Exception e) {
-			throw new ExceptionInChainedOperatorException(e);
-		}
-	}
-
-	@Override
-	public void close() {
-		try {
-			if (closeable != null) {
-				closeable.close();
-			}
-		}
-		catch (Exception e) {
-			throw new ExceptionInChainedOperatorException(e);
-		}
-	}
-
-	@Override
-	public Gauge<Long> getWatermarkGauge() {
-		return watermarkGauge;
-	}
+    @Override
+    public void emitWatermarkStatus(WatermarkStatus watermarkStatus) {
+        if (!announcedStatus.equals(watermarkStatus)) {
+            announcedStatus = watermarkStatus;
+            try {
+                input.processWatermarkStatus(watermarkStatus);
+            } catch (Exception e) {
+                throw new ExceptionInChainedOperatorException(e);
+            }
+        }
+    }
 }

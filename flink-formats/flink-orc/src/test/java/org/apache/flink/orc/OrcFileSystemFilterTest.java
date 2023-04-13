@@ -26,45 +26,64 @@ import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
+/** Unit Tests for {@link OrcFileFormatFactory}. */
+class OrcFileSystemFilterTest {
 
-/**
- * Unit Tests for {@link OrcFileFormatFactory}.
- */
-public class OrcFileSystemFilterTest {
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testApplyPredicate() {
+        List<ResolvedExpression> args = new ArrayList<>();
 
-	@Test
-	@SuppressWarnings("unchecked")
-	public void testApplyPredicate(){
-		List<ResolvedExpression> args = new ArrayList<>();
+        // equal
+        FieldReferenceExpression fieldReferenceExpression =
+                new FieldReferenceExpression("long1", DataTypes.BIGINT(), 0, 0);
+        ValueLiteralExpression valueLiteralExpression = new ValueLiteralExpression(10);
+        args.add(fieldReferenceExpression);
+        args.add(valueLiteralExpression);
 
-		// equal
-		FieldReferenceExpression fieldReferenceExpression = new FieldReferenceExpression("long1", DataTypes.BIGINT(), 0, 0);
-		ValueLiteralExpression valueLiteralExpression = new ValueLiteralExpression(10);
-		args.add(fieldReferenceExpression);
-		args.add(valueLiteralExpression);
+        CallExpression equalExpression =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.EQUALS, args, DataTypes.BOOLEAN());
+        OrcFilters.Predicate predicate1 = OrcFilters.toOrcPredicate(equalExpression);
+        OrcFilters.Predicate predicate2 =
+                new OrcFilters.Equals("long1", PredicateLeaf.Type.LONG, 10);
+        assertThat(predicate1).hasToString(predicate2.toString());
 
-		CallExpression equalExpression = new CallExpression(BuiltInFunctionDefinitions.EQUALS, args, DataTypes.BOOLEAN());
-		OrcFilters.Predicate predicate1 = OrcFilters.toOrcPredicate(equalExpression);
-		OrcFilters.Predicate predicate2 = new OrcFilters.Equals("long1", PredicateLeaf.Type.LONG, 10);
-		assertTrue(predicate1.toString().equals(predicate2.toString()));
+        // greater than
+        CallExpression greaterExpression =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.GREATER_THAN, args, DataTypes.BOOLEAN());
+        OrcFilters.Predicate predicate3 = OrcFilters.toOrcPredicate(greaterExpression);
+        OrcFilters.Predicate predicate4 =
+                new OrcFilters.Not(
+                        new OrcFilters.LessThanEquals("long1", PredicateLeaf.Type.LONG, 10));
+        assertThat(predicate3).hasToString(predicate4.toString());
 
-		// greater than
-		CallExpression greaterExpression = new CallExpression(BuiltInFunctionDefinitions.GREATER_THAN, args, DataTypes.BOOLEAN());
-		OrcFilters.Predicate predicate3 = OrcFilters.toOrcPredicate(greaterExpression);
-		OrcFilters.Predicate predicate4 = new OrcFilters.Not(new OrcFilters.LessThanEquals("long1", PredicateLeaf.Type.LONG, 10));
-		assertTrue(predicate3.toString().equals(predicate4.toString()));
+        // less than
+        CallExpression lessExpression =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.LESS_THAN, args, DataTypes.BOOLEAN());
+        OrcFilters.Predicate predicate5 = OrcFilters.toOrcPredicate(lessExpression);
+        OrcFilters.Predicate predicate6 =
+                new OrcFilters.LessThan("long1", PredicateLeaf.Type.LONG, 10);
+        assertThat(predicate5).hasToString(predicate6.toString());
 
-		// less than
-		CallExpression lessExpression = new CallExpression(BuiltInFunctionDefinitions.LESS_THAN, args, DataTypes.BOOLEAN());
-		OrcFilters.Predicate predicate5 = OrcFilters.toOrcPredicate(lessExpression);
-		OrcFilters.Predicate predicate6 = new OrcFilters.LessThan("long1", PredicateLeaf.Type.LONG, 10);
-		assertTrue(predicate5.toString().equals(predicate6.toString()));
-	}
+        // and
+        CallExpression andExpression =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.AND,
+                        Arrays.asList(greaterExpression, lessExpression),
+                        DataTypes.BOOLEAN());
+        OrcFilters.Predicate predicate7 = OrcFilters.toOrcPredicate(andExpression);
+        OrcFilters.Predicate predicate8 = new OrcFilters.And(predicate4, predicate6);
+        assertThat(predicate7).hasToString(predicate8.toString());
+    }
 }

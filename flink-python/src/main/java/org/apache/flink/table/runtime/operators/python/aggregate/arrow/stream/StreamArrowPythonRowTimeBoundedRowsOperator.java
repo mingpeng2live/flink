@@ -23,6 +23,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.ArrayList;
@@ -34,50 +35,59 @@ import java.util.List;
  */
 @Internal
 public class StreamArrowPythonRowTimeBoundedRowsOperator<K>
-	extends AbstractStreamArrowPythonBoundedRowsOperator<K> {
+        extends AbstractStreamArrowPythonBoundedRowsOperator<K> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	public StreamArrowPythonRowTimeBoundedRowsOperator(
-		Configuration config,
-		long minRetentionTime,
-		long maxRetentionTime,
-		PythonFunctionInfo[] pandasAggFunctions,
-		RowType inputType,
-		RowType outputType,
-		int inputTimeFieldIndex,
-		long lowerBoundary,
-		int[] groupingSet,
-		int[] udafInputOffsets) {
-		super(config, minRetentionTime, maxRetentionTime, pandasAggFunctions,
-			inputType, outputType, inputTimeFieldIndex, lowerBoundary, groupingSet, udafInputOffsets);
-	}
+    public StreamArrowPythonRowTimeBoundedRowsOperator(
+            Configuration config,
+            long minRetentionTime,
+            long maxRetentionTime,
+            PythonFunctionInfo[] pandasAggFunctions,
+            RowType inputType,
+            RowType udfInputType,
+            RowType udfOutputType,
+            int inputTimeFieldIndex,
+            long lowerBoundary,
+            GeneratedProjection inputGeneratedProjection) {
+        super(
+                config,
+                minRetentionTime,
+                maxRetentionTime,
+                pandasAggFunctions,
+                inputType,
+                udfInputType,
+                udfOutputType,
+                inputTimeFieldIndex,
+                lowerBoundary,
+                inputGeneratedProjection);
+    }
 
-	@Override
-	public void bufferInput(RowData input) throws Exception {
-		// register state-cleanup timer
-		registerProcessingCleanupTimer(timerService.currentProcessingTime());
+    @Override
+    public void bufferInput(RowData input) throws Exception {
+        // register state-cleanup timer
+        registerProcessingCleanupTimer(timerService.currentProcessingTime());
 
-		// triggering timestamp for trigger calculation
-		long triggeringTs = input.getLong(inputTimeFieldIndex);
+        // triggering timestamp for trigger calculation
+        long triggeringTs = input.getLong(inputTimeFieldIndex);
 
-		Long lastTriggeringTs = lastTriggeringTsState.value();
-		if (lastTriggeringTs == null) {
-			lastTriggeringTs = 0L;
-		}
+        Long lastTriggeringTs = lastTriggeringTsState.value();
+        if (lastTriggeringTs == null) {
+            lastTriggeringTs = 0L;
+        }
 
-		// check if the data is expired, if not, save the data and register event time timer
-		if (triggeringTs > lastTriggeringTs) {
-			List<RowData> data = inputState.get(triggeringTs);
-			if (null != data) {
-				data.add(input);
-			} else {
-				data = new ArrayList<>();
-				data.add(input);
-				// register event time timer
-				timerService.registerEventTimeTimer(triggeringTs);
-			}
-			inputState.put(triggeringTs, data);
-		}
-	}
+        // check if the data is expired, if not, save the data and register event time timer
+        if (triggeringTs > lastTriggeringTs) {
+            List<RowData> data = inputState.get(triggeringTs);
+            if (null != data) {
+                data.add(input);
+            } else {
+                data = new ArrayList<>();
+                data.add(input);
+                // register event time timer
+                timerService.registerEventTimeTimer(triggeringTs);
+            }
+            inputState.put(triggeringTs, data);
+        }
+    }
 }

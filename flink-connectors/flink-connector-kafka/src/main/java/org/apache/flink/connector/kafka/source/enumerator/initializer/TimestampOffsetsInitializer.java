@@ -18,6 +18,7 @@
 
 package org.apache.flink.connector.kafka.source.enumerator.initializer;
 
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.TopicPartition;
 
@@ -26,47 +27,50 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * An implementation of {@link OffsetsInitializer} to initialize the offsets
- * based on a timestamp.
+ * An implementation of {@link OffsetsInitializer} to initialize the offsets based on a timestamp.
  *
- * <P>Package private and should be instantiated via {@link OffsetsInitializer}.
+ * <p>Package private and should be instantiated via {@link OffsetsInitializer}.
  */
 class TimestampOffsetsInitializer implements OffsetsInitializer {
-	private static final long serialVersionUID = 2932230571773627233L;
-	private final long startingTimestamp;
+    private static final long serialVersionUID = 2932230571773627233L;
+    private final long startingTimestamp;
 
-	TimestampOffsetsInitializer(long startingTimestamp) {
-		this.startingTimestamp = startingTimestamp;
-	}
+    TimestampOffsetsInitializer(long startingTimestamp) {
+        this.startingTimestamp = startingTimestamp;
+    }
 
-	@Override
-	public Map<TopicPartition, Long> getPartitionOffsets(
-			Collection<TopicPartition> partitions,
-			PartitionOffsetsRetriever partitionOffsetsRetriever) {
-		Map<TopicPartition, Long> startingTimestamps = new HashMap<>();
-		Map<TopicPartition, Long> initialOffsets = new HashMap<>();
+    @Override
+    public Map<TopicPartition, Long> getPartitionOffsets(
+            Collection<TopicPartition> partitions,
+            PartitionOffsetsRetriever partitionOffsetsRetriever) {
+        Map<TopicPartition, Long> startingTimestamps = new HashMap<>();
+        Map<TopicPartition, Long> initialOffsets = new HashMap<>();
 
-		// First get the current end offsets of the partitions. This is going to be used
-		// in case we cannot find a suitable offsets based on the timestamp, i.e. the message
-		// meeting the requirement of the timestamp have not been produced to Kafka yet, in
-		// this case, we just use the latest offset.
-		// We need to get the latest offsets before querying offsets by time to ensure that
-		// no message is going to be missed.
-		Map<TopicPartition, Long> endOffsets = partitionOffsetsRetriever.endOffsets(partitions);
-		partitions.forEach(tp -> startingTimestamps.put(tp, startingTimestamp));
-		partitionOffsetsRetriever.offsetsForTimes(startingTimestamps).forEach((tp, offsetMetadata) -> {
-			if (offsetMetadata != null) {
-				initialOffsets.put(tp, offsetMetadata.offset());
-			} else {
-				// The timestamp does not exist in the partition yet, we will just consume from the latest.
-				initialOffsets.put(tp, endOffsets.get(tp));
-			}
-		});
-		return initialOffsets;
-	}
+        // First get the current end offsets of the partitions. This is going to be used
+        // in case we cannot find a suitable offsets based on the timestamp, i.e. the message
+        // meeting the requirement of the timestamp have not been produced to Kafka yet, in
+        // this case, we just use the latest offset.
+        // We need to get the latest offsets before querying offsets by time to ensure that
+        // no message is going to be missed.
+        Map<TopicPartition, Long> endOffsets = partitionOffsetsRetriever.endOffsets(partitions);
+        partitions.forEach(tp -> startingTimestamps.put(tp, startingTimestamp));
+        Map<TopicPartition, OffsetAndTimestamp> topicPartitionOffsetAndTimestampMap =
+                partitionOffsetsRetriever.offsetsForTimes(startingTimestamps);
 
-	@Override
-	public OffsetResetStrategy getAutoOffsetResetStrategy() {
-		return OffsetResetStrategy.NONE;
-	}
+        for (TopicPartition tp : partitions) {
+            // offset may not have been resolved
+            if (topicPartitionOffsetAndTimestampMap.containsKey(tp)) {
+                initialOffsets.put(tp, topicPartitionOffsetAndTimestampMap.get(tp).offset());
+            } else {
+                initialOffsets.put(tp, endOffsets.get(tp));
+            }
+        }
+
+        return initialOffsets;
+    }
+
+    @Override
+    public OffsetResetStrategy getAutoOffsetResetStrategy() {
+        return OffsetResetStrategy.LATEST;
+    }
 }

@@ -19,60 +19,128 @@
 package org.apache.flink.connector.file.sink;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.util.Objects;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Wrapper class for both type of committables in {@link FileSink}. One
- * committable might be either one pending files to commit, or one
- * in-progress file to cleanup.
+ * Wrapper class for both type of committables in {@link FileSink}. One committable might be either
+ * one pending files to commit, or one in-progress file to cleanup.
  */
 @Internal
 public class FileSinkCommittable implements Serializable {
 
-	@Nullable
-	private final InProgressFileWriter.PendingFileRecoverable pendingFile;
+    private final String bucketId;
 
-	@Nullable
-	private final InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup;
+    @Nullable private final InProgressFileWriter.PendingFileRecoverable pendingFile;
 
-	public FileSinkCommittable(InProgressFileWriter.PendingFileRecoverable pendingFile) {
-		this.pendingFile = checkNotNull(pendingFile);
-		this.inProgressFileToCleanup = null;
-	}
+    @Nullable private final InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup;
 
-	public FileSinkCommittable(InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup) {
-		this.pendingFile = null;
-		this.inProgressFileToCleanup = checkNotNull(inProgressFileToCleanup);
-	}
+    @Nullable private final Path compactedFileToCleanup;
 
-	FileSinkCommittable(
-			@Nullable InProgressFileWriter.PendingFileRecoverable pendingFile,
-			@Nullable InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup) {
-		this.pendingFile = pendingFile;
-		this.inProgressFileToCleanup = inProgressFileToCleanup;
-	}
+    public FileSinkCommittable(
+            String bucketId, InProgressFileWriter.PendingFileRecoverable pendingFile) {
+        this.bucketId = bucketId;
+        this.pendingFile = checkNotNull(pendingFile);
+        this.inProgressFileToCleanup = null;
+        this.compactedFileToCleanup = null;
+    }
 
-	public boolean hasPendingFile() {
-		return pendingFile != null;
-	}
+    public FileSinkCommittable(
+            String bucketId,
+            InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup) {
+        this.bucketId = bucketId;
+        this.pendingFile = null;
+        this.inProgressFileToCleanup = checkNotNull(inProgressFileToCleanup);
+        this.compactedFileToCleanup = null;
+    }
 
-	@Nullable
-	public InProgressFileWriter.PendingFileRecoverable getPendingFile() {
-		return pendingFile;
-	}
+    public FileSinkCommittable(String bucketId, Path compactedFileToCleanup) {
+        this.bucketId = bucketId;
+        this.pendingFile = null;
+        this.inProgressFileToCleanup = null;
+        this.compactedFileToCleanup = checkNotNull(compactedFileToCleanup);
+    }
 
-	public boolean hasInProgressFileToCleanup() {
-		return inProgressFileToCleanup != null;
-	}
+    FileSinkCommittable(
+            String bucketId,
+            @Nullable InProgressFileWriter.PendingFileRecoverable pendingFile,
+            @Nullable InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup,
+            @Nullable Path compactedFileToCleanup) {
+        this.bucketId = bucketId;
+        this.pendingFile = pendingFile;
+        this.inProgressFileToCleanup = inProgressFileToCleanup;
+        this.compactedFileToCleanup = compactedFileToCleanup;
+    }
 
-	@Nullable
-	public InProgressFileWriter.InProgressFileRecoverable getInProgressFileToCleanup() {
-		return inProgressFileToCleanup;
-	}
+    public String getBucketId() {
+        return bucketId;
+    }
+
+    public boolean hasPendingFile() {
+        return pendingFile != null;
+    }
+
+    @Nullable
+    public InProgressFileWriter.PendingFileRecoverable getPendingFile() {
+        return pendingFile;
+    }
+
+    public boolean hasInProgressFileToCleanup() {
+        return inProgressFileToCleanup != null;
+    }
+
+    @Nullable
+    public InProgressFileWriter.InProgressFileRecoverable getInProgressFileToCleanup() {
+        return inProgressFileToCleanup;
+    }
+
+    public boolean hasCompactedFileToCleanup() {
+        return compactedFileToCleanup != null;
+    }
+
+    @Nullable
+    public Path getCompactedFileToCleanup() {
+        return compactedFileToCleanup;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        FileSinkCommittable that = (FileSinkCommittable) o;
+        return Objects.equals(bucketId, that.bucketId)
+                && Objects.equals(pendingFile, that.pendingFile)
+                && Objects.equals(inProgressFileToCleanup, that.inProgressFileToCleanup)
+                && Objects.equals(compactedFileToCleanup, that.compactedFileToCleanup);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(bucketId, pendingFile, inProgressFileToCleanup, compactedFileToCleanup);
+    }
+
+    @Override
+    public String toString() {
+        return "FileSinkCommittable{"
+                + "bucketId='"
+                + bucketId
+                + ", pendingFile="
+                + pendingFile
+                + ", inProgressFileToCleanup="
+                + inProgressFileToCleanup
+                + ", compactedFileToCleanup="
+                + compactedFileToCleanup
+                + '}';
+    }
 }

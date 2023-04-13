@@ -19,44 +19,43 @@
 package org.apache.flink.table.examples.utils;
 
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.test.junit5.MiniClusterExtension;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
-/**
- * Test base for validating the example output to stdout.
- */
+/** Test base for validating the example output to stdout. */
 public abstract class ExampleOutputTestBase {
 
-	@ClassRule
-	public static MiniClusterWithClientResource miniClusterResource = new MiniClusterWithClientResource(
-		new MiniClusterResourceConfiguration.Builder()
-			.setNumberTaskManagers(1)
-			.setNumberSlotsPerTaskManager(1)
-			.build());
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_RESOURCE =
+            new MiniClusterExtension(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(1)
+                            .build());
 
-	private PrintStream originalPrintStream;
+    private PrintStream originalPrintStream;
 
-	private ByteArrayOutputStream testOutputStream;
+    private ByteArrayOutputStream testOutputStream;
 
-	@Before
-	public void init() {
-		originalPrintStream = System.out;
-		testOutputStream = new ByteArrayOutputStream();
-		System.setOut(new PrintStream(testOutputStream));
-	}
+    @BeforeEach
+    void before() {
+        originalPrintStream = System.out;
+        testOutputStream = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(testOutputStream));
+    }
 
-	protected String getOutputString() {
-		return testOutputStream.toString();
-	}
+    protected String getOutputString() {
+        return testOutputStream.toString();
+    }
 
-	@After
-	public void finalize() {
-		System.setOut(originalPrintStream);
-	}
+    @AfterEach
+    void after() {
+        System.setOut(originalPrintStream);
+    }
 }

@@ -23,23 +23,26 @@ import org.apache.flink.metrics.Gauge;
 
 import org.apache.kafka.common.Metric;
 
-/**
- * Gauge for getting the current value of a Kafka metric.
- */
+/** Gauge for getting the current value of a Kafka metric. */
 @Internal
 public class KafkaMetricMutableWrapper implements Gauge<Double> {
-	private Metric kafkaMetric;
+    private Metric kafkaMetric;
 
-	public KafkaMetricMutableWrapper(Metric metric) {
-		this.kafkaMetric = metric;
-	}
+    public KafkaMetricMutableWrapper(Metric metric) {
+        this.kafkaMetric = metric;
+    }
 
-	@Override
-	public Double getValue() {
-		return kafkaMetric.value();
-	}
+    @Override
+    public Double getValue() {
+        final Object metricValue = kafkaMetric.metricValue();
+        // Previously KafkaMetric supported KafkaMetric#value that always returned a Double value.
+        // Since this method has been deprecated and is removed in future releases we have to
+        // manually check if the returned value is Double. Internally, KafkaMetric#value also
+        // returned 0.0 for all not "measurable" values, so we restored the original behavior.
+        return metricValue instanceof Double ? (Double) metricValue : 0.0;
+    }
 
-	public void setKafkaMetric(Metric kafkaMetric) {
-		this.kafkaMetric = kafkaMetric;
-	}
+    public void setKafkaMetric(Metric kafkaMetric) {
+        this.kafkaMetric = kafkaMetric;
+    }
 }

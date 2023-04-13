@@ -26,45 +26,39 @@ import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link FixedLengthByteKeyComparator}.
- */
-public class FixedLengthByteKeyComparatorTest extends ComparatorTestBase<Tuple2<byte[], StreamRecord<Integer>>> {
-	@Override
-	protected Order[] getTestedOrder() {
-		return new Order[]{Order.ASCENDING};
-	}
+/** Tests for {@link FixedLengthByteKeyComparator}. */
+class FixedLengthByteKeyComparatorTest
+        extends ComparatorTestBase<Tuple2<byte[], StreamRecord<Integer>>> {
+    @Override
+    protected Order[] getTestedOrder() {
+        return new Order[] {Order.ASCENDING};
+    }
 
-	@Override
-	protected TypeComparator<Tuple2<byte[], StreamRecord<Integer>>> createComparator(boolean ascending) {
-		return new FixedLengthByteKeyComparator<>(
-			new IntSerializer().getLength()
-		);
-	}
+    @Override
+    protected TypeComparator<Tuple2<byte[], StreamRecord<Integer>>> createComparator(
+            boolean ascending) {
+        return new FixedLengthByteKeyComparator<>(new IntSerializer().getLength());
+    }
 
-	@Override
-	protected TypeSerializer<Tuple2<byte[], StreamRecord<Integer>>> createSerializer() {
-		IntSerializer intSerializer = new IntSerializer();
-		return new KeyAndValueSerializer<>(
-			intSerializer,
-			intSerializer.getLength()
-		);
-	}
+    @Override
+    protected TypeSerializer<Tuple2<byte[], StreamRecord<Integer>>> createSerializer() {
+        IntSerializer intSerializer = new IntSerializer();
+        return new KeyAndValueSerializer<>(intSerializer, intSerializer.getLength());
+    }
 
-	@Override
-	protected void deepEquals(
-			String message,
-			Tuple2<byte[], StreamRecord<Integer>> should,
-			Tuple2<byte[], StreamRecord<Integer>> is) {
-		assertThat(message, should.f0, equalTo(is.f0));
-		assertThat(message, should.f1, equalTo(is.f1));
-	}
+    @Override
+    protected void deepEquals(
+            String message,
+            Tuple2<byte[], StreamRecord<Integer>> should,
+            Tuple2<byte[], StreamRecord<Integer>> is) {
+        assertThat(is.f0).as(message).isEqualTo(should.f0);
+        assertThat(is.f1).as(message).isEqualTo(should.f1);
+    }
 
-	@Override
-	protected Tuple2<byte[], StreamRecord<Integer>>[] getSortedTestData() {
-		return SerializerComparatorTestData.getOrderedIntTestData();
-	}
+    @Override
+    protected Tuple2<byte[], StreamRecord<Integer>>[] getSortedTestData() {
+        return SerializerComparatorTestData.getOrderedIntTestData();
+    }
 }

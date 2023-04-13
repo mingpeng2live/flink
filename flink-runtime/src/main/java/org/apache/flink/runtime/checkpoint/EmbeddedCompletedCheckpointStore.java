@@ -20,87 +20,145 @@ package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.jobgraph.RestoreMode;
+import org.apache.flink.runtime.state.SharedStateRegistry;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.concurrent.Executors;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * An embedded in-memory checkpoint store, which supports shutdown and suspend.
- * You can use this to test HA as long as the factory always returns the same store instance.
- */
-public class EmbeddedCompletedCheckpointStore implements CompletedCheckpointStore {
+/** An embedded in-memory checkpoint store, which supports shutdown and suspend. */
+public class EmbeddedCompletedCheckpointStore extends AbstractCompleteCheckpointStore {
 
-	private final ArrayDeque<CompletedCheckpoint> checkpoints = new ArrayDeque<>(2);
+    private static void throwAlreadyShutdownException(JobStatus status) {
+        throw new IllegalStateException(
+                String.format("Store has been already shutdown with %s.", status));
+    }
 
-	private final Collection<CompletedCheckpoint> suspended = new ArrayDeque<>(2);
+    private final ArrayDeque<CompletedCheckpoint> checkpoints = new ArrayDeque<>(2);
 
-	private final int maxRetainedCheckpoints;
+    private final AtomicReference<JobStatus> shutdownStatus = new AtomicReference<>();
 
-	public EmbeddedCompletedCheckpointStore() {
-		this(1);
-	}
+    private final int maxRetainedCheckpoints;
 
-	EmbeddedCompletedCheckpointStore(int maxRetainedCheckpoints) {
-		Preconditions.checkArgument(maxRetainedCheckpoints > 0);
-		this.maxRetainedCheckpoints = maxRetainedCheckpoints;
-	}
+    private final Executor ioExecutor = Executors.directExecutor();
 
-	@Override
-	public void recover() {
-		checkpoints.addAll(suspended);
-		suspended.clear();
-	}
+    @VisibleForTesting
+    public EmbeddedCompletedCheckpointStore() {
+        this(1);
+    }
 
-	@Override
-	public void addCheckpoint(
-			CompletedCheckpoint checkpoint,
-			CheckpointsCleaner checkpointsCleaner,
-			Runnable postCleanup) throws Exception {
-		checkpoints.addLast(checkpoint);
+    @VisibleForTesting
+    public EmbeddedCompletedCheckpointStore(int maxRetainedCheckpoints) {
+        this(
+                maxRetainedCheckpoints,
+                Collections.emptyList(),
+                /* Using the default restore mode in tests to detect any breaking changes early. */
+                RestoreMode.DEFAULT);
+    }
 
-		if (checkpoints.size() > maxRetainedCheckpoints) {
-			removeOldestCheckpoint();
-		}
-	}
+    public EmbeddedCompletedCheckpointStore(
+            int maxRetainedCheckpoints,
+            Collection<CompletedCheckpoint> initialCheckpoints,
+            RestoreMode restoreMode) {
+        this(
+                maxRetainedCheckpoints,
+                initialCheckpoints,
+                SharedStateRegistry.DEFAULT_FACTORY.create(
+                        Executors.directExecutor(), initialCheckpoints, restoreMode));
+    }
 
-	@VisibleForTesting
-	void removeOldestCheckpoint() throws Exception {
-		CompletedCheckpoint checkpointToSubsume = checkpoints.removeFirst();
-		checkpointToSubsume.discardOnSubsume();
-	}
+    public EmbeddedCompletedCheckpointStore(
+            int maxRetainedCheckpoints,
+            Collection<CompletedCheckpoint> initialCheckpoints,
+            SharedStateRegistry sharedStateRegistry) {
+        super(sharedStateRegistry);
+        Preconditions.checkArgument(maxRetainedCheckpoints > 0);
+        this.maxRetainedCheckpoints = maxRetainedCheckpoints;
+        this.checkpoints.addAll(initialCheckpoints);
+    }
 
-	@Override
-	public void shutdown(JobStatus jobStatus, CheckpointsCleaner checkpointsCleaner, Runnable postCleanup) throws Exception {
-		if (jobStatus.isGloballyTerminalState()) {
-			checkpoints.clear();
-			suspended.clear();
-		} else {
-			suspended.clear();
-			suspended.addAll(checkpoints);
-			checkpoints.clear();
-		}
-	}
+    @Override
+    public CompletedCheckpoint addCheckpointAndSubsumeOldestOne(
+            CompletedCheckpoint checkpoint,
+            CheckpointsCleaner checkpointsCleaner,
+            Runnable postCleanup)
+            throws Exception {
+        if (shutdownStatus.get() != null) {
+            throwAlreadyShutdownException(shutdownStatus.get());
+        }
+        checkpoints.addLast(checkpoint);
 
-	@Override
-	public List<CompletedCheckpoint> getAllCheckpoints() {
-		return new ArrayList<>(checkpoints);
-	}
+        CompletedCheckpoint completedCheckpoint =
+                CheckpointSubsumeHelper.subsume(
+                                checkpoints,
+                                maxRetainedCheckpoints,
+                                cc -> {
+                                    cc.markAsDiscardedOnSubsume();
+                                    checkpointsCleaner.addSubsumedCheckpoint(cc);
+                                })
+                        .orElse(null);
 
-	@Override
-	public int getNumberOfRetainedCheckpoints() {
-		return checkpoints.size();
-	}
+        findLowest(checkpoints)
+                .ifPresent(
+                        id ->
+                                checkpointsCleaner.cleanSubsumedCheckpoints(
+                                        id,
+                                        getSharedStateRegistry().unregisterUnusedState(id),
+                                        postCleanup,
+                                        ioExecutor));
+        return completedCheckpoint;
+    }
 
-	@Override
-	public int getMaxNumberOfRetainedCheckpoints() {
-		return maxRetainedCheckpoints;
-	}
+    @VisibleForTesting
+    void removeOldestCheckpoint() throws Exception {
+        CompletedCheckpoint checkpointToSubsume = checkpoints.removeFirst();
+        checkpointToSubsume.markAsDiscardedOnSubsume().discard();
+        unregisterUnusedState(checkpoints);
+    }
 
-	@Override
-	public boolean requiresExternalizedCheckpoints() {
-		return false;
-	}
+    @Override
+    public void shutdown(JobStatus jobStatus, CheckpointsCleaner checkpointsCleaner)
+            throws Exception {
+        super.shutdown(jobStatus, checkpointsCleaner);
+        if (shutdownStatus.compareAndSet(null, jobStatus)) {
+            if (jobStatus.isGloballyTerminalState()) {
+                // We are done with this store. We should leave no checkpoints for recovery.
+                checkpoints.clear();
+            }
+        } else {
+            throwAlreadyShutdownException(shutdownStatus.get());
+        }
+    }
+
+    @Override
+    public List<CompletedCheckpoint> getAllCheckpoints() {
+        return new ArrayList<>(checkpoints);
+    }
+
+    @Override
+    public int getNumberOfRetainedCheckpoints() {
+        return checkpoints.size();
+    }
+
+    @Override
+    public int getMaxNumberOfRetainedCheckpoints() {
+        return maxRetainedCheckpoints;
+    }
+
+    @Override
+    public boolean requiresExternalizedCheckpoints() {
+        return false;
+    }
+
+    public Optional<JobStatus> getShutdownStatus() {
+        return Optional.ofNullable(shutdownStatus.get());
+    }
 }

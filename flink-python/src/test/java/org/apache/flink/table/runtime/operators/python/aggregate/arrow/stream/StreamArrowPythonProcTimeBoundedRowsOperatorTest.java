@@ -23,8 +23,12 @@ import org.apache.flink.python.PythonFunctionRunner;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
+import org.apache.flink.table.planner.codegen.ProjectionCodeGenerator;
+import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.runtime.operators.python.aggregate.arrow.AbstractArrowPythonAggregateFunctionOperator;
 import org.apache.flink.table.runtime.utils.PassThroughPythonAggregateFunctionRunner;
 import org.apache.flink.table.runtime.utils.PythonTestUtils;
@@ -33,122 +37,140 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-/**
- * Test for {@link StreamArrowPythonProcTimeBoundedRowsOperator}.
- */
-public class StreamArrowPythonProcTimeBoundedRowsOperatorTest
-	extends AbstractStreamArrowPythonAggregateFunctionOperatorTest {
+/** Test for {@link StreamArrowPythonProcTimeBoundedRowsOperator}. */
+class StreamArrowPythonProcTimeBoundedRowsOperatorTest
+        extends AbstractStreamArrowPythonAggregateFunctionOperatorTest {
 
-	@Test
-	public void testOverWindowAggregateFunction() throws Exception {
-		OneInputStreamOperatorTestHarness<RowData, RowData> testHarness = getTestHarness(
-			new Configuration());
+    @Test
+    void testOverWindowAggregateFunction() throws Exception {
+        OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
+                getTestHarness(new Configuration());
 
-		ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
-		testHarness.open();
+        testHarness.open();
 
-		testHarness.setProcessingTime(100);
-		testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c2", 0L)));
-		testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c4", 1L)));
-		testHarness.setProcessingTime(200);
-		testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c6", 2L)));
-		testHarness.setProcessingTime(300);
-		testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c2", "c8", 3L)));
-		testHarness.setProcessingTime(600);
+        testHarness.setProcessingTime(100);
+        testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c2", 0L)));
+        testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c4", 1L)));
+        testHarness.setProcessingTime(200);
+        testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c1", "c6", 2L)));
+        testHarness.setProcessingTime(300);
+        testHarness.processElement(new StreamRecord<>(newBinaryRow(true, "c2", "c8", 3L)));
+        testHarness.setProcessingTime(600);
 
-		testHarness.close();
+        testHarness.close();
 
-		expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c2", 0L, 0L)));
-		expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c4", 1L, 0L)));
-		expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c6", 2L, 1L)));
-		expectedOutput.add(new StreamRecord<>(newRow(true, "c2", "c8", 3L, 3L)));
+        expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c2", 0L, 0L)));
+        expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c4", 1L, 0L)));
+        expectedOutput.add(new StreamRecord<>(newRow(true, "c1", "c6", 2L, 1L)));
+        expectedOutput.add(new StreamRecord<>(newRow(true, "c2", "c8", 3L, 3L)));
 
-		assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
-	}
+        assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
+    }
 
-	@Override
-	public LogicalType[] getOutputLogicalType() {
-		return new LogicalType[]{
-			DataTypes.STRING().getLogicalType(),
-			DataTypes.STRING().getLogicalType(),
-			DataTypes.BIGINT().getLogicalType(),
-			DataTypes.BIGINT().getLogicalType(),
-		};
-	}
+    @Override
+    public LogicalType[] getOutputLogicalType() {
+        return new LogicalType[] {
+            DataTypes.STRING().getLogicalType(),
+            DataTypes.STRING().getLogicalType(),
+            DataTypes.BIGINT().getLogicalType(),
+            DataTypes.BIGINT().getLogicalType(),
+        };
+    }
 
-	@Override
-	public RowType getInputType() {
-		return new RowType(Arrays.asList(
-			new RowType.RowField("f1", new VarCharType()),
-			new RowType.RowField("f2", new VarCharType()),
-			new RowType.RowField("f3", new BigIntType())));
-	}
+    @Override
+    public RowType getInputType() {
+        return new RowType(
+                Arrays.asList(
+                        new RowType.RowField("f1", new VarCharType()),
+                        new RowType.RowField("f2", new VarCharType()),
+                        new RowType.RowField("f3", new BigIntType())));
+    }
 
-	@Override
-	public RowType getOutputType() {
-		return new RowType(Arrays.asList(
-			new RowType.RowField("f1", new VarCharType()),
-			new RowType.RowField("f2", new VarCharType()),
-			new RowType.RowField("f3", new BigIntType()),
-			new RowType.RowField("agg", new BigIntType())));
-	}
+    @Override
+    public RowType getOutputType() {
+        return new RowType(
+                Arrays.asList(
+                        new RowType.RowField("f1", new VarCharType()),
+                        new RowType.RowField("f2", new VarCharType()),
+                        new RowType.RowField("f3", new BigIntType()),
+                        new RowType.RowField("agg", new BigIntType())));
+    }
 
-	@Override
-	public AbstractArrowPythonAggregateFunctionOperator getTestOperator(
-		Configuration config,
-		PythonFunctionInfo[] pandasAggregateFunctions,
-		RowType inputType,
-		RowType outputType,
-		int[] groupingSet,
-		int[] udafInputOffsets) {
-		return new PassThroughStreamArrowPythonProcTimeBoundedRowsOperator(
-			config,
-			pandasAggregateFunctions,
-			inputType,
-			outputType,
-			3,
-			1,
-			groupingSet,
-			udafInputOffsets);
-	}
+    @Override
+    public AbstractArrowPythonAggregateFunctionOperator getTestOperator(
+            Configuration config,
+            PythonFunctionInfo[] pandasAggregateFunctions,
+            RowType inputType,
+            RowType outputType,
+            int[] groupingSet,
+            int[] udafInputOffsets) {
+        RowType udfInputType = (RowType) Projection.of(udafInputOffsets).project(inputType);
+        RowType udfOutputType =
+                (RowType)
+                        Projection.range(inputType.getFieldCount(), outputType.getFieldCount())
+                                .project(outputType);
 
-	private static class PassThroughStreamArrowPythonProcTimeBoundedRowsOperator
-		extends StreamArrowPythonProcTimeBoundedRowsOperator {
+        return new PassThroughStreamArrowPythonProcTimeBoundedRowsOperator(
+                config,
+                pandasAggregateFunctions,
+                inputType,
+                udfInputType,
+                udfOutputType,
+                3,
+                1,
+                ProjectionCodeGenerator.generateProjection(
+                        new CodeGeneratorContext(
+                                new Configuration(),
+                                Thread.currentThread().getContextClassLoader()),
+                        "UdafInputProjection",
+                        inputType,
+                        udfInputType,
+                        udafInputOffsets));
+    }
 
-		PassThroughStreamArrowPythonProcTimeBoundedRowsOperator(
-			Configuration config,
-			PythonFunctionInfo[] pandasAggFunctions,
-			RowType inputType,
-			RowType outputType,
-			int inputTimeFieldIndex,
-			long lowerBoundary,
-			int[] groupingSet,
-			int[] udafInputOffsets) {
-			super(config, 100, 200, pandasAggFunctions, inputType,
-				outputType, inputTimeFieldIndex, lowerBoundary, groupingSet, udafInputOffsets);
-		}
+    private static class PassThroughStreamArrowPythonProcTimeBoundedRowsOperator
+            extends StreamArrowPythonProcTimeBoundedRowsOperator {
 
-		@Override
-		public PythonFunctionRunner createPythonFunctionRunner() {
-			return new PassThroughPythonAggregateFunctionRunner(
-				getRuntimeContext().getTaskName(),
-				PythonTestUtils.createTestEnvironmentManager(),
-				userDefinedFunctionInputType,
-				userDefinedFunctionOutputType,
-				getFunctionUrn(),
-				getUserDefinedFunctionsProto(),
-				getInputOutputCoderUrn(),
-				new HashMap<>(),
-				PythonTestUtils.createMockFlinkMetricContainer(),
-				false
-			);
-		}
-	}
+        PassThroughStreamArrowPythonProcTimeBoundedRowsOperator(
+                Configuration config,
+                PythonFunctionInfo[] pandasAggFunctions,
+                RowType inputType,
+                RowType udfInputType,
+                RowType udfOutputType,
+                int inputTimeFieldIndex,
+                long lowerBoundary,
+                GeneratedProjection inputGeneratedProjection) {
+            super(
+                    config,
+                    100,
+                    200,
+                    pandasAggFunctions,
+                    inputType,
+                    udfInputType,
+                    udfOutputType,
+                    inputTimeFieldIndex,
+                    lowerBoundary,
+                    inputGeneratedProjection);
+        }
+
+        @Override
+        public PythonFunctionRunner createPythonFunctionRunner() {
+            return new PassThroughPythonAggregateFunctionRunner(
+                    getRuntimeContext().getTaskName(),
+                    PythonTestUtils.createTestProcessEnvironmentManager(),
+                    udfInputType,
+                    udfOutputType,
+                    getFunctionUrn(),
+                    createUserDefinedFunctionsProto(),
+                    PythonTestUtils.createMockFlinkMetricContainer(),
+                    false);
+        }
+    }
 }

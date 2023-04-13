@@ -25,29 +25,28 @@ import org.apache.flink.table.data.RowData;
 
 /**
  * Provider of a {@link Source} instance as a runtime implementation for {@link ScanTableSource}.
+ *
+ * <p>{@code DataStreamScanProvider} in {@code flink-table-api-java-bridge} is available for
+ * advanced connector developers.
  */
 @PublicEvolving
 public interface SourceProvider extends ScanTableSource.ScanRuntimeProvider {
 
-	/**
-	 * Helper method for creating a static provider.
-	 */
-	static SourceProvider of(Source<RowData, ?, ?> source) {
-		return new SourceProvider() {
-			@Override
-			public Source<RowData, ?, ?> createSource() {
-				return source;
-			}
+    /** Helper method for creating a static provider. */
+    static SourceProvider of(Source<RowData, ?, ?> source) {
+        return new SourceProvider() {
+            @Override
+            public Source<RowData, ?, ?> createSource() {
+                return source;
+            }
 
-			@Override
-			public boolean isBounded() {
-				return Boundedness.BOUNDED.equals(source.getBoundedness());
-			}
-		};
-	}
+            @Override
+            public boolean isBounded() {
+                return Boundedness.BOUNDED.equals(source.getBoundedness());
+            }
+        };
+    }
 
-	/**
-	 * Creates a {@link Source} instance.
-	 */
-	Source<RowData, ?, ?> createSource();
+    /** Creates a {@link Source} instance. */
+    Source<RowData, ?, ?> createSource();
 }

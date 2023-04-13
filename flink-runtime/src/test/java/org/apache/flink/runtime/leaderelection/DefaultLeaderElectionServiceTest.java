@@ -19,244 +19,321 @@
 package org.apache.flink.runtime.leaderelection;
 
 import org.apache.flink.core.testutils.CheckedThread;
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.function.RunnableWithException;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
-import java.util.concurrent.TimeoutException;
 
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.Matchers.nullValue;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link DefaultLeaderElectionService}.
- */
-public class DefaultLeaderElectionServiceTest extends TestLogger {
+/** Tests for {@link DefaultLeaderElectionService}. */
+class DefaultLeaderElectionServiceTest {
 
-	private static final String TEST_URL = "akka//user/jobmanager";
-	private static final long timeout = 50L;
+    private static final String TEST_URL = "akka//user/jobmanager";
 
-	@Test
-	public void testOnGrantAndRevokeLeadership() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				// grant leadership
-				testingLeaderElectionDriver.isLeader();
+    @Test
+    void testOnGrantAndRevokeLeadership() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            // grant leadership
+                            testingLeaderElectionDriver.isLeader();
 
-				testingContender.waitForLeader(timeout);
-				assertThat(testingContender.getDescription(), is(TEST_URL));
-				assertThat(testingContender.getLeaderSessionID(), is(leaderElectionService.getLeaderSessionID()));
-				// Check the external storage
-				assertThat(
-					testingLeaderElectionDriver.getLeaderInformation(),
-					is(LeaderInformation.known(leaderElectionService.getLeaderSessionID(), TEST_URL)));
+                            testingContender.waitForLeader();
+                            assertThat(testingContender.getDescription()).isEqualTo(TEST_URL);
+                            assertThat(testingContender.getLeaderSessionID())
+                                    .isEqualTo(leaderElectionService.getLeaderSessionID());
 
-				// revoke leadership
-				testingLeaderElectionDriver.notLeader();
-				testingContender.waitForRevokeLeader(timeout);
-				assertThat(testingContender.getLeaderSessionID(), is(nullValue()));
-				assertThat(leaderElectionService.getLeaderSessionID(), is(nullValue()));
-				// External storage should be cleared
-				assertThat(testingLeaderElectionDriver.getLeaderInformation(), is(LeaderInformation.empty()));
-			});
-		}};
-	}
+                            final LeaderInformation expectedLeaderInformationInHaBackend =
+                                    LeaderInformation.known(
+                                            leaderElectionService.getLeaderSessionID(), TEST_URL);
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .as(
+                                            "The HA backend should have its leader information updated.")
+                                    .isEqualTo(expectedLeaderInformationInHaBackend);
 
-	@Test
-	public void testLeaderInformationChangedAndShouldBeCorrected() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				testingLeaderElectionDriver.isLeader();
+                            // revoke leadership
+                            testingLeaderElectionDriver.notLeader();
+                            testingContender.waitForRevokeLeader();
+                            assertThat(testingContender.getLeaderSessionID()).isNull();
+                            assertThat(leaderElectionService.getLeaderSessionID()).isNull();
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .as(
+                                            "External storage is not touched by the leader session because the leadership is already lost.")
+                                    .isEqualTo(expectedLeaderInformationInHaBackend);
+                        });
+            }
+        };
+    }
 
-				final LeaderInformation expectedLeader = LeaderInformation.known(
-					leaderElectionService.getLeaderSessionID(), TEST_URL);
+    @Test
+    void testProperCleanupOnStopWhenHoldingTheLeadership() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
+                            testingContender.waitForLeader();
 
-				// Leader information changed on external storage. It should be corrected.
-				testingLeaderElectionDriver.leaderInformationChanged(LeaderInformation.empty());
-				assertThat(testingLeaderElectionDriver.getLeaderInformation(), is(expectedLeader));
+                            assertThat(testingContender.getLeaderSessionID()).isNotNull();
+                            assertThat(leaderElectionService.getLeaderSessionID()).isNotNull();
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation().isEmpty())
+                                    .isFalse();
 
-				testingLeaderElectionDriver.leaderInformationChanged(
-					LeaderInformation.known(UUID.randomUUID(), "faulty-address"));
-				assertThat(testingLeaderElectionDriver.getLeaderInformation(), is(expectedLeader));
-			});
-		}};
-	}
+                            leaderElectionService.stop();
 
-	@Test
-	public void testHasLeadership() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				testingLeaderElectionDriver.isLeader();
-				final UUID currentLeaderSessionId = leaderElectionService.getLeaderSessionID();
-				assertThat(currentLeaderSessionId, is(notNullValue()));
-				assertThat(leaderElectionService.hasLeadership(currentLeaderSessionId), is(true));
-				assertThat(leaderElectionService.hasLeadership(UUID.randomUUID()), is(false));
+                            assertThat(testingContender.getLeaderSessionID())
+                                    .as(
+                                            "The LeaderContender should have been informed about the leadership loss.")
+                                    .isNull();
+                            assertThat(leaderElectionService.getLeaderSessionID())
+                                    .as(
+                                            "The LeaderElectionService should have its internal state cleaned.")
+                                    .isNull();
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .as("The HA backend's data should have been cleaned.")
+                                    .isEqualTo(LeaderInformation.empty());
+                        });
+            }
+        };
+    }
 
-				leaderElectionService.stop();
-				assertThat(leaderElectionService.hasLeadership(currentLeaderSessionId), is(false));
-			});
-		}};
-	}
+    @Test
+    void testLeaderInformationChangedAndShouldBeCorrected() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
 
-	@Test
-	public void testLeaderInformationChangedIfNotBeingLeader() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				final LeaderInformation faultyLeader = LeaderInformation.known(UUID.randomUUID(), "faulty-address");
-				testingLeaderElectionDriver.leaderInformationChanged(faultyLeader);
-				// External storage should keep the wrong value.
-				assertThat(testingLeaderElectionDriver.getLeaderInformation(), is(faultyLeader));
-			});
-		}};
-	}
+                            final LeaderInformation expectedLeader =
+                                    LeaderInformation.known(
+                                            leaderElectionService.getLeaderSessionID(), TEST_URL);
 
-	@Test
-	public void testOnGrantLeadershipIsIgnoredAfterBeingStop() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				leaderElectionService.stop();
-				testingLeaderElectionDriver.isLeader();
-				// leader contender is not granted leadership
-				assertThat(testingContender.getLeaderSessionID(), is(nullValue()));
-			});
-		}};
-	}
+                            // Leader information changed on external storage. It should be
+                            // corrected.
+                            testingLeaderElectionDriver.leaderInformationChanged(
+                                    LeaderInformation.empty());
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .isEqualTo(expectedLeader);
 
-	@Test
-	public void testOnLeaderInformationChangeIsIgnoredAfterBeingStop() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				testingLeaderElectionDriver.isLeader();
+                            testingLeaderElectionDriver.leaderInformationChanged(
+                                    LeaderInformation.known(UUID.randomUUID(), "faulty-address"));
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .isEqualTo(expectedLeader);
+                        });
+            }
+        };
+    }
 
-				leaderElectionService.stop();
-				testingLeaderElectionDriver.leaderInformationChanged(LeaderInformation.empty());
+    @Test
+    void testHasLeadership() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
+                            final UUID currentLeaderSessionId =
+                                    leaderElectionService.getLeaderSessionID();
+                            assertThat(currentLeaderSessionId).isNotNull();
+                            assertThat(leaderElectionService.hasLeadership(currentLeaderSessionId))
+                                    .isTrue();
+                            assertThat(leaderElectionService.hasLeadership(UUID.randomUUID()))
+                                    .isFalse();
 
-				// External storage should not be corrected
-				assertThat(testingLeaderElectionDriver.getLeaderInformation(), is(LeaderInformation.empty()));
-			});
-		}};
-	}
+                            leaderElectionService.stop();
+                            assertThat(leaderElectionService.hasLeadership(currentLeaderSessionId))
+                                    .isFalse();
+                        });
+            }
+        };
+    }
 
-	@Test
-	public void testOnRevokeLeadershipIsIgnoredAfterBeingStop() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				testingLeaderElectionDriver.isLeader();
-				final UUID oldSessionId = leaderElectionService.getLeaderSessionID();
-				assertThat(testingContender.getLeaderSessionID(), is(oldSessionId));
+    @Test
+    void testLeaderInformationChangedIfNotBeingLeader() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            final LeaderInformation faultyLeader =
+                                    LeaderInformation.known(UUID.randomUUID(), "faulty-address");
+                            testingLeaderElectionDriver.leaderInformationChanged(faultyLeader);
+                            // External storage should keep the wrong value.
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .isEqualTo(faultyLeader);
+                        });
+            }
+        };
+    }
 
-				leaderElectionService.stop();
+    @Test
+    void testOnGrantLeadershipIsIgnoredAfterBeingStop() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            leaderElectionService.stop();
+                            testingLeaderElectionDriver.isLeader();
+                            // leader contender is not granted leadership
+                            assertThat(testingContender.getLeaderSessionID()).isNull();
+                        });
+            }
+        };
+    }
 
-				testingLeaderElectionDriver.notLeader();
-				// leader contender is not revoked leadership
-				assertThat(testingContender.getLeaderSessionID(), is(oldSessionId));
-			});
-		}};
-	}
+    @Test
+    void testOnLeaderInformationChangeIsIgnoredAfterBeingStop() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
 
-	@Test
-	public void testOldConfirmLeaderInformation() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				testingLeaderElectionDriver.isLeader();
-				final UUID currentLeaderSessionId = leaderElectionService.getLeaderSessionID();
-				assertThat(currentLeaderSessionId, is(notNullValue()));
+                            leaderElectionService.stop();
+                            testingLeaderElectionDriver.leaderInformationChanged(
+                                    LeaderInformation.empty());
 
-				// Old confirm call should be ignored.
-				leaderElectionService.confirmLeadership(UUID.randomUUID(), TEST_URL);
-				assertThat(leaderElectionService.getLeaderSessionID(), is(currentLeaderSessionId));
-			});
-		}};
-	}
+                            // External storage should not be corrected
+                            assertThat(testingLeaderElectionDriver.getLeaderInformation())
+                                    .isEqualTo(LeaderInformation.empty());
+                        });
+            }
+        };
+    }
 
-	@Test
-	public void testErrorForwarding() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				final Exception testException = new Exception("test leader exception");
+    @Test
+    void testOnRevokeLeadershipIsTriggeredAfterBeingStop() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
+                            final UUID oldSessionId = leaderElectionService.getLeaderSessionID();
+                            assertThat(testingContender.getLeaderSessionID())
+                                    .isEqualTo(oldSessionId);
 
-				testingLeaderElectionDriver.onFatalError(testException);
+                            leaderElectionService.stop();
 
-				testingContender.waitForError(timeout);
-				assertThat(testingContender.getError(), is(notNullValue()));
-				assertThat(testingContender.getError(), FlinkMatchers.containsCause(testException));
-			});
-		}};
-	}
+                            assertThat(testingContender.getLeaderSessionID())
+                                    .as(
+                                            "LeaderContender should have been revoked as part of the stop call.")
+                                    .isNull();
+                        });
+            }
+        };
+    }
 
-	@Test
-	public void testErrorIsIgnoredAfterBeingStop() throws Exception {
-		new Context() {{
-			runTest(() -> {
-				final Exception testException = new Exception("test leader exception");
+    @Test
+    void testOldConfirmLeaderInformation() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            testingLeaderElectionDriver.isLeader();
+                            final UUID currentLeaderSessionId =
+                                    leaderElectionService.getLeaderSessionID();
+                            assertThat(currentLeaderSessionId).isNotNull();
 
-				leaderElectionService.stop();
-				testingLeaderElectionDriver.onFatalError(testException);
+                            // Old confirm call should be ignored.
+                            leaderElectionService.confirmLeadership(UUID.randomUUID(), TEST_URL);
+                            assertThat(leaderElectionService.getLeaderSessionID())
+                                    .isEqualTo(currentLeaderSessionId);
+                        });
+            }
+        };
+    }
 
-				try {
-					testingContender.waitForError(timeout);
-					fail("We expect to have a timeout here because there's no error should be passed to contender.");
-				} catch (TimeoutException ex) {
-					// noop
-				}
+    @Test
+    void testErrorForwarding() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            final Exception testException = new Exception("test leader exception");
 
-				assertThat(testingContender.getError(), is(nullValue()));
-			});
-		}};
-	}
+                            testingLeaderElectionDriver.onFatalError(testException);
 
-	/**
-	 * Tests that we can shut down the DefaultLeaderElectionService if the used
-	 * LeaderElectionDriver holds an internal lock. See FLINK-20008 for more details.
-	 */
-	@Test
-	public void testServiceShutDownWithSynchronizedDriver() throws Exception {
-		final TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory testingLeaderElectionDriverFactory = new TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory();
-		final DefaultLeaderElectionService leaderElectionService = new DefaultLeaderElectionService(
-			testingLeaderElectionDriverFactory);
+                            testingContender.waitForError();
+                            assertThat(testingContender.getError())
+                                    .isNotNull()
+                                    .hasCause(testException);
+                        });
+            }
+        };
+    }
 
-		final TestingContender testingContender = new TestingContender(TEST_URL, leaderElectionService);
+    @Test
+    void testErrorIsIgnoredAfterBeingStop() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            final Exception testException = new Exception("test leader exception");
 
-		leaderElectionService.start(testingContender);
-		final TestingLeaderElectionDriver currentLeaderDriver = Preconditions.checkNotNull(
-			testingLeaderElectionDriverFactory.getCurrentLeaderDriver());
+                            leaderElectionService.stop();
+                            testingLeaderElectionDriver.onFatalError(testException);
+                            assertThat(testingContender.getError()).isNull();
+                        });
+            }
+        };
+    }
 
-		final CheckedThread isLeaderThread = new CheckedThread() {
-			@Override
-			public void go() {
-				currentLeaderDriver.isLeader();
-			}
-		};
-		isLeaderThread.start();
+    /**
+     * Tests that we can shut down the DefaultLeaderElectionService if the used LeaderElectionDriver
+     * holds an internal lock. See FLINK-20008 for more details.
+     */
+    @Test
+    void testServiceShutDownWithSynchronizedDriver() throws Exception {
+        final TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory
+                testingLeaderElectionDriverFactory =
+                        new TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory();
+        final DefaultLeaderElectionService leaderElectionService =
+                new DefaultLeaderElectionService(testingLeaderElectionDriverFactory);
 
-		leaderElectionService.stop();
-		isLeaderThread.sync();
-	}
+        final TestingContender testingContender =
+                new TestingContender(TEST_URL, leaderElectionService);
 
-	private class Context {
-		final TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory testingLeaderElectionDriverFactory =
-			new TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory();
-		final DefaultLeaderElectionService leaderElectionService = new DefaultLeaderElectionService(
-			testingLeaderElectionDriverFactory);
-		final TestingContender testingContender = new TestingContender(TEST_URL, leaderElectionService);
+        leaderElectionService.start(testingContender);
+        final TestingLeaderElectionDriver currentLeaderDriver =
+                Preconditions.checkNotNull(
+                        testingLeaderElectionDriverFactory.getCurrentLeaderDriver());
 
-		TestingLeaderElectionDriver testingLeaderElectionDriver;
+        final CheckedThread isLeaderThread =
+                new CheckedThread() {
+                    @Override
+                    public void go() {
+                        currentLeaderDriver.isLeader();
+                    }
+                };
+        isLeaderThread.start();
 
-		void runTest(RunnableWithException testMethod) throws Exception {
-			leaderElectionService.start(testingContender);
+        leaderElectionService.stop();
+        isLeaderThread.sync();
+    }
 
-			testingLeaderElectionDriver = testingLeaderElectionDriverFactory.getCurrentLeaderDriver();
-			assertThat(testingLeaderElectionDriver, is(notNullValue()));
-			testMethod.run();
+    private static class Context {
+        final TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory
+                testingLeaderElectionDriverFactory =
+                        new TestingLeaderElectionDriver.TestingLeaderElectionDriverFactory();
+        final DefaultLeaderElectionService leaderElectionService =
+                new DefaultLeaderElectionService(testingLeaderElectionDriverFactory);
+        final TestingContender testingContender =
+                new TestingContender(TEST_URL, leaderElectionService);
 
-			leaderElectionService.stop();
-		}
-	}
+        TestingLeaderElectionDriver testingLeaderElectionDriver;
+
+        void runTest(RunnableWithException testMethod) throws Exception {
+            leaderElectionService.start(testingContender);
+
+            testingLeaderElectionDriver =
+                    testingLeaderElectionDriverFactory.getCurrentLeaderDriver();
+            assertThat(testingLeaderElectionDriver).isNotNull();
+            testMethod.run();
+
+            leaderElectionService.stop();
+        }
+    }
 }

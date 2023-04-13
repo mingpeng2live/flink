@@ -25,64 +25,107 @@ import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.checkpoint.CheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
+import org.apache.flink.runtime.jobgraph.RestoreMode;
+import org.apache.flink.runtime.state.SharedStateRegistryFactory;
+
+import javax.annotation.Nullable;
 
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * Factory to create {@link CompletedCheckpointStore} and {@link CheckpointIDCounter}.
- */
+/** Factory to create {@link CompletedCheckpointStore} and {@link CheckpointIDCounter}. */
 public class KubernetesCheckpointRecoveryFactory implements CheckpointRecoveryFactory {
 
-	private final FlinkKubeClient kubeClient;
+    private final FlinkKubeClient kubeClient;
 
-	private final Executor executor;
+    private final Executor executor;
 
-	// Function to get the ConfigMap name for checkpoint. Input is job id, and output is ConfigMap name.
-	private final Function<JobID, String> getConfigMapNameFunction;
+    // Function to get the ConfigMap name for checkpoint. Input is job id, and output is ConfigMap
+    // name.
+    private final Function<JobID, String> getConfigMapNameFunction;
 
-	private final Configuration configuration;
+    private final Configuration configuration;
 
-	private final String lockIdentity;
+    @Nullable private final String lockIdentity;
 
-	/**
-	 * Create a KubernetesCheckpointRecoveryFactory.
-	 *
-	 * @param kubeClient Kubernetes client
-	 * @param configuration Flink configuration
-	 * @param executor IO executor to run blocking calls
-	 * @param function Function to get the ConfigMap name for checkpoint.
-	 * @param lockIdentity Lock identity of current HA service
-	 */
-	public KubernetesCheckpointRecoveryFactory(
-			FlinkKubeClient kubeClient,
-			Configuration configuration,
-			Executor executor,
-			Function<JobID, String> function,
-			String lockIdentity) {
+    private final String clusterId;
 
-		this.kubeClient = checkNotNull(kubeClient);
-		this.configuration = checkNotNull(configuration);
-		this.executor = checkNotNull(executor);
-		this.getConfigMapNameFunction = checkNotNull(function);
-		this.lockIdentity = checkNotNull(lockIdentity);
-	}
+    /**
+     * Create a KubernetesCheckpointRecoveryFactory.
+     *
+     * @param kubeClient Kubernetes client
+     * @param configuration Flink configuration
+     * @param executor IO executor to run blocking calls
+     * @param function Function to get the ConfigMap name for checkpoint.
+     * @param lockIdentity Lock identity of current HA service
+     */
+    private KubernetesCheckpointRecoveryFactory(
+            FlinkKubeClient kubeClient,
+            Configuration configuration,
+            Executor executor,
+            Function<JobID, String> function,
+            String clusterId,
+            @Nullable String lockIdentity) {
 
-	@Override
-	public CompletedCheckpointStore createCheckpointStore(
-			JobID jobID,
-			int maxNumberOfCheckpointsToRetain,
-			ClassLoader userClassLoader) throws Exception {
+        this.kubeClient = checkNotNull(kubeClient);
+        this.configuration = checkNotNull(configuration);
+        this.executor = checkNotNull(executor);
+        this.getConfigMapNameFunction = checkNotNull(function);
+        this.lockIdentity = lockIdentity;
+        this.clusterId = clusterId;
+    }
 
-		final String configMapName = getConfigMapNameFunction.apply(jobID);
-		return KubernetesUtils.createCompletedCheckpointStore(
-			configuration, kubeClient, executor, configMapName, lockIdentity, maxNumberOfCheckpointsToRetain);
-	}
+    @Override
+    public CompletedCheckpointStore createRecoveredCompletedCheckpointStore(
+            JobID jobID,
+            int maxNumberOfCheckpointsToRetain,
+            SharedStateRegistryFactory sharedStateRegistryFactory,
+            Executor ioExecutor,
+            RestoreMode restoreMode)
+            throws Exception {
+        final String configMapName = getConfigMapNameFunction.apply(jobID);
+        KubernetesUtils.createConfigMapIfItDoesNotExist(kubeClient, configMapName, clusterId);
 
-	@Override
-	public CheckpointIDCounter createCheckpointIDCounter(JobID jobID) {
-		return new KubernetesCheckpointIDCounter(kubeClient, getConfigMapNameFunction.apply(jobID), lockIdentity);
-	}
+        return KubernetesUtils.createCompletedCheckpointStore(
+                configuration,
+                kubeClient,
+                executor,
+                configMapName,
+                lockIdentity,
+                maxNumberOfCheckpointsToRetain,
+                sharedStateRegistryFactory,
+                ioExecutor,
+                restoreMode);
+    }
+
+    @Override
+    public CheckpointIDCounter createCheckpointIDCounter(JobID jobID) throws Exception {
+        final String configMapName = getConfigMapNameFunction.apply(jobID);
+        KubernetesUtils.createConfigMapIfItDoesNotExist(kubeClient, configMapName, clusterId);
+
+        return new KubernetesCheckpointIDCounter(kubeClient, configMapName, lockIdentity);
+    }
+
+    public static KubernetesCheckpointRecoveryFactory withLeadershipValidation(
+            FlinkKubeClient kubeClient,
+            Configuration configuration,
+            Executor executor,
+            String clusterId,
+            Function<JobID, String> function,
+            String lockIdentity) {
+        return new KubernetesCheckpointRecoveryFactory(
+                kubeClient, configuration, executor, function, clusterId, lockIdentity);
+    }
+
+    public static KubernetesCheckpointRecoveryFactory withoutLeadershipValidation(
+            FlinkKubeClient kubeClient,
+            Configuration configuration,
+            Executor executor,
+            String clusterId,
+            Function<JobID, String> function) {
+        return new KubernetesCheckpointRecoveryFactory(
+                kubeClient, configuration, executor, function, clusterId, null);
+    }
 }

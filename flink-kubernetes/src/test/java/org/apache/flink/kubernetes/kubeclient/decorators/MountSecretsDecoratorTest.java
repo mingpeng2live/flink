@@ -23,45 +23,59 @@ import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.kubeclient.FlinkPod;
 import org.apache.flink.kubernetes.kubeclient.KubernetesJobManagerTestBase;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * General tests for the {@link MountSecretsDecorator}.
- */
-public class MountSecretsDecoratorTest extends KubernetesJobManagerTestBase {
+/** General tests for the {@link MountSecretsDecorator}. */
+class MountSecretsDecoratorTest extends KubernetesJobManagerTestBase {
 
-	private static final String SECRET_NAME = "test";
-	private static final String SECRET_MOUNT_PATH = "/opt/flink/secret";
+    private static final String SECRET_NAME = "test";
+    private static final String SECRET_MOUNT_PATH = "/opt/flink/secret";
 
-	private MountSecretsDecorator mountSecretsDecorator;
+    private MountSecretsDecorator mountSecretsDecorator;
 
-	@Override
-	protected void setupFlinkConfig() {
-		super.setupFlinkConfig();
+    @Override
+    protected void setupFlinkConfig() {
+        super.setupFlinkConfig();
 
-		this.flinkConfig.setString(KubernetesConfigOptions.KUBERNETES_SECRETS.key(), SECRET_NAME + ":" + SECRET_MOUNT_PATH);
-	}
+        this.flinkConfig.setString(
+                KubernetesConfigOptions.KUBERNETES_SECRETS.key(),
+                SECRET_NAME + ":" + SECRET_MOUNT_PATH);
+    }
 
-	@Override
-	protected void onSetup() throws Exception {
-		super.onSetup();
+    @Override
+    protected void onSetup() throws Exception {
+        super.onSetup();
 
-		this.mountSecretsDecorator = new MountSecretsDecorator(kubernetesJobManagerParameters);
-	}
+        this.mountSecretsDecorator = new MountSecretsDecorator(kubernetesJobManagerParameters);
+    }
 
-	@Test
-	public void testWhetherPodOrContainerIsDecorated() {
-		final FlinkPod resultFlinkPod = mountSecretsDecorator.decorateFlinkPod(baseFlinkPod);
+    @Test
+    void testWhetherPodOrContainerIsDecorated() {
+        final FlinkPod resultFlinkPod = mountSecretsDecorator.decorateFlinkPod(baseFlinkPod);
 
-		assertFalse(VolumeTestUtils.podHasVolume(baseFlinkPod.getPod(), SECRET_NAME + "-volume"));
-		assertTrue(VolumeTestUtils.podHasVolume(resultFlinkPod.getPod(), SECRET_NAME + "-volume"));
+        assertThat(
+                        VolumeTestUtils.podHasVolume(
+                                baseFlinkPod.getPodWithoutMainContainer(), SECRET_NAME + "-volume"))
+                .isFalse();
+        assertThat(
+                        VolumeTestUtils.podHasVolume(
+                                resultFlinkPod.getPodWithoutMainContainer(),
+                                SECRET_NAME + "-volume"))
+                .isTrue();
 
-		assertFalse(VolumeTestUtils.containerHasVolume(baseFlinkPod.getMainContainer(),
-			SECRET_NAME + "-volume", SECRET_MOUNT_PATH));
-		assertTrue(VolumeTestUtils.containerHasVolume(resultFlinkPod.getMainContainer(),
-			SECRET_NAME + "-volume", SECRET_MOUNT_PATH));
-	}
+        assertThat(
+                        VolumeTestUtils.containerHasVolume(
+                                baseFlinkPod.getMainContainer(),
+                                SECRET_NAME + "-volume",
+                                SECRET_MOUNT_PATH))
+                .isFalse();
+        assertThat(
+                        VolumeTestUtils.containerHasVolume(
+                                resultFlinkPod.getMainContainer(),
+                                SECRET_NAME + "-volume",
+                                SECRET_MOUNT_PATH))
+                .isTrue();
+    }
 }

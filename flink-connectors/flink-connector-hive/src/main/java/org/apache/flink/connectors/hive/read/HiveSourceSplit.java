@@ -18,6 +18,7 @@
 
 package org.apache.flink.connectors.hive.read;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.connector.file.src.FileSourceSplit;
 import org.apache.flink.connector.file.src.util.CheckpointedPosition;
 import org.apache.flink.connectors.hive.HiveTablePartition;
@@ -32,59 +33,105 @@ import java.io.IOException;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * A wrapper class that wraps info needed for a file input split.
- * Right now, it contains info about the partition of the split.
+ * A sub-class of {@link FileSourceSplit} that contains extra information needed to read a hive
+ * table.
  */
+@PublicEvolving
 public class HiveSourceSplit extends FileSourceSplit {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	protected final HiveTablePartition hiveTablePartition;
+    private final HiveTablePartition hiveTablePartition;
 
-	public HiveSourceSplit(
-			FileSplit fileSplit,
-			HiveTablePartition hiveTablePartition,
-			@Nullable CheckpointedPosition readerPosition) throws IOException {
-		this(
-				fileSplit.toString(),
-				new Path(fileSplit.getPath().toString()),
-				fileSplit.getStart(),
-				fileSplit.getLength(),
-				fileSplit.getLocations(),
-				readerPosition,
-				hiveTablePartition
-		);
-	}
+    public HiveSourceSplit(
+            FileSplit fileSplit,
+            HiveTablePartition hiveTablePartition,
+            @Nullable CheckpointedPosition readerPosition)
+            throws IOException {
+        this(
+                fileSplit.toString(),
+                new Path(fileSplit.getPath().toString()),
+                fileSplit.getStart(),
+                fileSplit.getLength(),
+                0,
+                0,
+                fileSplit.getLocations(),
+                readerPosition,
+                hiveTablePartition);
+    }
 
-	public HiveSourceSplit(
-			String id,
-			Path filePath,
-			long offset,
-			long length,
-			String[] hostnames,
-			@Nullable CheckpointedPosition readerPosition,
-			HiveTablePartition hiveTablePartition) {
-		super(id, filePath, offset, length, hostnames, readerPosition);
-		this.hiveTablePartition = checkNotNull(hiveTablePartition, "hiveTablePartition can not be null");
-	}
+    public HiveSourceSplit(
+            String id,
+            Path filePath,
+            long offset,
+            long length,
+            long fileModificationTime,
+            long fileSize,
+            String[] hostnames,
+            @Nullable CheckpointedPosition readerPosition,
+            HiveTablePartition hiveTablePartition) {
+        super(
+                id,
+                filePath,
+                offset,
+                length,
+                fileModificationTime,
+                fileSize,
+                hostnames,
+                readerPosition);
+        this.hiveTablePartition =
+                checkNotNull(hiveTablePartition, "hiveTablePartition can not be null");
+    }
 
-	public HiveTablePartition getHiveTablePartition() {
-		return hiveTablePartition;
-	}
+    /**
+     * @deprecated You should use {@link #HiveSourceSplit(String, Path, long, long, long, long,
+     *     String[], CheckpointedPosition, HiveTablePartition)}
+     */
+    @Deprecated
+    public HiveSourceSplit(
+            String id,
+            Path filePath,
+            long offset,
+            long length,
+            String[] hostnames,
+            @Nullable CheckpointedPosition readerPosition,
+            HiveTablePartition hiveTablePartition) {
+        this(id, filePath, offset, length, 0, 0, hostnames, readerPosition, hiveTablePartition);
+    }
 
-	public FileSplit toMapRedSplit() {
-		return new FileSplit(new org.apache.hadoop.fs.Path(path().toString()), offset(), length(), hostnames());
-	}
+    public HiveTablePartition getHiveTablePartition() {
+        return hiveTablePartition;
+    }
 
-	@Override
-	public FileSourceSplit updateWithCheckpointedPosition(@Nullable CheckpointedPosition position) {
-		return new HiveSourceSplit(splitId(), path(), offset(), length(), hostnames(), position, hiveTablePartition);
-	}
+    public FileSplit toMapRedSplit() {
+        return new FileSplit(
+                new org.apache.hadoop.fs.Path(path().toString()), offset(), length(), hostnames());
+    }
 
-	@Override
-	public String toString() {
-		return "HiveSourceSplit{" +
-				"hiveTablePartition=" + hiveTablePartition +
-				'}';
-	}
+    @Override
+    public FileSourceSplit updateWithCheckpointedPosition(@Nullable CheckpointedPosition position) {
+        return new HiveSourceSplit(
+                splitId(),
+                path(),
+                offset(),
+                length(),
+                fileModificationTime(),
+                fileSize(),
+                hostnames(),
+                position,
+                hiveTablePartition);
+    }
+
+    @Override
+    public String toString() {
+        return "HiveSourceSplit{"
+                + String.format("Path=%s, ", path())
+                + String.format("Offset=%d, ", offset())
+                + String.format("Length=%d, ", length())
+                + String.format(
+                        "Position=%s, ",
+                        getReaderPosition().map(CheckpointedPosition::toString).orElse("null"))
+                + String.format("HiveTablePartition=%s", getHiveTablePartition())
+                + '}';
+    }
 }

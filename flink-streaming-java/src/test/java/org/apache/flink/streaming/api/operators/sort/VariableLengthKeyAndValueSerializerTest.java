@@ -24,47 +24,47 @@ import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-/**
- * Tests for {@link KeyAndValueSerializer}, which verify variable length keys.
- */
-public class VariableLengthKeyAndValueSerializerTest extends SerializerTestBase<Tuple2<byte[], StreamRecord<String>>> {
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-	@Override
-	protected TypeSerializer<Tuple2<byte[], StreamRecord<String>>> createSerializer() {
-		StringSerializer stringSerializer = new StringSerializer();
-		return new KeyAndValueSerializer<>(
-			stringSerializer,
-			stringSerializer.getLength()
-		);
-	}
+/** Tests for {@link KeyAndValueSerializer}, which verify variable length keys. */
+class VariableLengthKeyAndValueSerializerTest
+        extends SerializerTestBase<Tuple2<byte[], StreamRecord<String>>> {
 
-	@Override
-	protected int getLength() {
-		return -1;
-	}
+    @Override
+    protected TypeSerializer<Tuple2<byte[], StreamRecord<String>>> createSerializer() {
+        StringSerializer stringSerializer = new StringSerializer();
+        return new KeyAndValueSerializer<>(stringSerializer, stringSerializer.getLength());
+    }
 
-	@Override
-	@SuppressWarnings({"rawtypes", "unchecked"})
-	protected Class<Tuple2<byte[], StreamRecord<String>>> getTypeClass() {
-		return (Class<Tuple2<byte[], StreamRecord<String>>>) (Class) Tuple2.class;
-	}
+    @Override
+    protected int getLength() {
+        return -1;
+    }
 
-	@Override
-	protected Tuple2<byte[], StreamRecord<String>>[] getTestData() {
-		return SerializerComparatorTestData.getOrderedStringTestData();
-	}
+    @Override
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    protected Class<Tuple2<byte[], StreamRecord<String>>> getTypeClass() {
+        return (Class<Tuple2<byte[], StreamRecord<String>>>) (Class) Tuple2.class;
+    }
 
-	@Override
-	@Test(expected = UnsupportedOperationException.class)
-	public void testConfigSnapshotInstantiation() {
-		super.testConfigSnapshotInstantiation();
-	}
+    @Override
+    protected Tuple2<byte[], StreamRecord<String>>[] getTestData() {
+        return SerializerComparatorTestData.getOrderedStringTestData();
+    }
 
-	@Override
-	@Test(expected = UnsupportedOperationException.class)
-	public void testSnapshotConfigurationAndReconfigure() throws Exception {
-		super.testSnapshotConfigurationAndReconfigure();
-	}
+    @Override
+    @Test
+    public void testConfigSnapshotInstantiation() {
+        assertThatThrownBy(() -> super.testConfigSnapshotInstantiation())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Override
+    @Test
+    public void testSnapshotConfigurationAndReconfigure() throws Exception {
+        assertThatThrownBy(() -> super.testSnapshotConfigurationAndReconfigure())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 }

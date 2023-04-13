@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.jobmaster.slotpool;
 
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotProfile;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
@@ -32,74 +33,91 @@ import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * The provider serves physical slot requests.
- */
+/** The provider serves physical slot requests. */
 public class PhysicalSlotProviderImpl implements PhysicalSlotProvider {
-	private static final Logger LOG = LoggerFactory.getLogger(PhysicalSlotProviderImpl.class);
+    private static final Logger LOG = LoggerFactory.getLogger(PhysicalSlotProviderImpl.class);
 
-	private final SlotSelectionStrategy slotSelectionStrategy;
+    private final SlotSelectionStrategy slotSelectionStrategy;
 
-	private final SlotPool slotPool;
+    private final SlotPool slotPool;
 
-	public PhysicalSlotProviderImpl(SlotSelectionStrategy slotSelectionStrategy, SlotPool slotPool) {
-		this.slotSelectionStrategy = checkNotNull(slotSelectionStrategy);
-		this.slotPool = checkNotNull(slotPool);
-		slotPool.disableBatchSlotRequestTimeoutCheck();
-	}
+    public PhysicalSlotProviderImpl(
+            SlotSelectionStrategy slotSelectionStrategy, SlotPool slotPool) {
+        this.slotSelectionStrategy = checkNotNull(slotSelectionStrategy);
+        this.slotPool = checkNotNull(slotPool);
+    }
 
-	@Override
-	public CompletableFuture<PhysicalSlotRequest.Result> allocatePhysicalSlot(PhysicalSlotRequest physicalSlotRequest) {
-		SlotRequestId slotRequestId = physicalSlotRequest.getSlotRequestId();
-		SlotProfile slotProfile = physicalSlotRequest.getSlotProfile();
-		ResourceProfile resourceProfile = slotProfile.getPhysicalSlotResourceProfile();
+    @Override
+    public void disableBatchSlotRequestTimeoutCheck() {
+        slotPool.disableBatchSlotRequestTimeoutCheck();
+    }
 
-		LOG.debug("Received slot request [{}] with resource requirements: {}", slotRequestId, resourceProfile);
+    @Override
+    public CompletableFuture<PhysicalSlotRequest.Result> allocatePhysicalSlot(
+            PhysicalSlotRequest physicalSlotRequest) {
+        SlotRequestId slotRequestId = physicalSlotRequest.getSlotRequestId();
+        SlotProfile slotProfile = physicalSlotRequest.getSlotProfile();
+        ResourceProfile resourceProfile = slotProfile.getPhysicalSlotResourceProfile();
 
-		Optional<PhysicalSlot> availablePhysicalSlot = tryAllocateFromAvailable(slotRequestId, slotProfile);
+        LOG.debug(
+                "Received slot request [{}] with resource requirements: {}",
+                slotRequestId,
+                resourceProfile);
 
-		CompletableFuture<PhysicalSlot> slotFuture;
-		slotFuture = availablePhysicalSlot
-			.map(CompletableFuture::completedFuture)
-			.orElseGet(() -> requestNewSlot(
-				slotRequestId,
-				resourceProfile,
-				physicalSlotRequest.willSlotBeOccupiedIndefinitely()));
+        Optional<PhysicalSlot> availablePhysicalSlot =
+                tryAllocateFromAvailable(slotRequestId, slotProfile);
 
-		return slotFuture.thenApply(physicalSlot -> new PhysicalSlotRequest.Result(slotRequestId, physicalSlot));
-	}
+        CompletableFuture<PhysicalSlot> slotFuture;
+        slotFuture =
+                availablePhysicalSlot
+                        .map(CompletableFuture::completedFuture)
+                        .orElseGet(
+                                () ->
+                                        requestNewSlot(
+                                                slotRequestId,
+                                                resourceProfile,
+                                                slotProfile.getPreferredAllocations(),
+                                                physicalSlotRequest
+                                                        .willSlotBeOccupiedIndefinitely()));
 
-	private Optional<PhysicalSlot> tryAllocateFromAvailable(SlotRequestId slotRequestId, SlotProfile slotProfile) {
-		Collection<SlotSelectionStrategy.SlotInfoAndResources> slotInfoList =
-			slotPool.getAvailableSlotsInformation()
-				.stream()
-				.map(SlotSelectionStrategy.SlotInfoAndResources::fromSingleSlot)
-				.collect(Collectors.toList());
+        return slotFuture.thenApply(
+                physicalSlot -> new PhysicalSlotRequest.Result(slotRequestId, physicalSlot));
+    }
 
-		Optional<SlotSelectionStrategy.SlotInfoAndLocality> selectedAvailableSlot =
-			slotSelectionStrategy.selectBestSlotForProfile(slotInfoList, slotProfile);
+    private Optional<PhysicalSlot> tryAllocateFromAvailable(
+            SlotRequestId slotRequestId, SlotProfile slotProfile) {
+        Collection<SlotSelectionStrategy.SlotInfoAndResources> slotInfoList =
+                slotPool.getAvailableSlotsInformation().stream()
+                        .map(SlotSelectionStrategy.SlotInfoAndResources::fromSingleSlot)
+                        .collect(Collectors.toList());
 
-		return selectedAvailableSlot.flatMap(
-			slotInfoAndLocality -> slotPool.allocateAvailableSlot(
-				slotRequestId,
-				slotInfoAndLocality.getSlotInfo().getAllocationId(),
-				slotProfile.getPhysicalSlotResourceProfile())
-		);
-	}
+        Optional<SlotSelectionStrategy.SlotInfoAndLocality> selectedAvailableSlot =
+                slotSelectionStrategy.selectBestSlotForProfile(slotInfoList, slotProfile);
 
-	private CompletableFuture<PhysicalSlot> requestNewSlot(
-			SlotRequestId slotRequestId,
-			ResourceProfile resourceProfile,
-			boolean willSlotBeOccupiedIndefinitely) {
-		if (willSlotBeOccupiedIndefinitely) {
-			return slotPool.requestNewAllocatedSlot(slotRequestId, resourceProfile, null);
-		} else {
-			return slotPool.requestNewAllocatedBatchSlot(slotRequestId, resourceProfile);
-		}
-	}
+        return selectedAvailableSlot.flatMap(
+                slotInfoAndLocality ->
+                        slotPool.allocateAvailableSlot(
+                                slotRequestId,
+                                slotInfoAndLocality.getSlotInfo().getAllocationId(),
+                                slotProfile.getPhysicalSlotResourceProfile()));
+    }
 
-	@Override
-	public void cancelSlotRequest(SlotRequestId slotRequestId, Throwable cause) {
-		slotPool.releaseSlot(slotRequestId, cause);
-	}
+    private CompletableFuture<PhysicalSlot> requestNewSlot(
+            SlotRequestId slotRequestId,
+            ResourceProfile resourceProfile,
+            Collection<AllocationID> preferredAllocations,
+            boolean willSlotBeOccupiedIndefinitely) {
+        if (willSlotBeOccupiedIndefinitely) {
+            return slotPool.requestNewAllocatedSlot(
+                    slotRequestId, resourceProfile, preferredAllocations, null);
+        } else {
+            return slotPool.requestNewAllocatedBatchSlot(
+                    slotRequestId, resourceProfile, preferredAllocations);
+        }
+    }
+
+    @Override
+    public void cancelSlotRequest(SlotRequestId slotRequestId, Throwable cause) {
+        slotPool.releaseSlot(slotRequestId, cause);
+    }
 }

@@ -22,14 +22,17 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumerBase;
+import org.apache.flink.connector.base.DeliveryGuarantee;
+import org.apache.flink.connector.kafka.source.KafkaSourceOptions;
+import org.apache.flink.streaming.connectors.kafka.config.BoundedMode;
 import org.apache.flink.streaming.connectors.kafka.config.StartupMode;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartition;
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkKafkaPartitioner;
+import org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.BoundedOptions;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -46,6 +49,9 @@ import org.apache.flink.table.factories.SerializationFormatFactory;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.time.Duration;
@@ -56,288 +62,388 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.KEY_FIELDS;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.KEY_FIELDS_PREFIX;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.KEY_FORMAT;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.PROPERTIES_PREFIX;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.PROPS_BOOTSTRAP_SERVERS;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.PROPS_GROUP_ID;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SCAN_STARTUP_MODE;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SCAN_STARTUP_SPECIFIC_OFFSETS;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SCAN_STARTUP_TIMESTAMP_MILLIS;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SCAN_TOPIC_PARTITION_DISCOVERY;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SINK_PARTITIONER;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.SINK_SEMANTIC;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.StartupOptions;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.TOPIC;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.TOPIC_PATTERN;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.VALUE_FIELDS_INCLUDE;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.VALUE_FORMAT;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.createKeyFormatProjection;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.createValueFormatProjection;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.getFlinkKafkaPartitioner;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.getKafkaProperties;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.getSinkSemantic;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.getStartupOptions;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.validateTableSinkOptions;
-import static org.apache.flink.streaming.connectors.kafka.table.KafkaOptions.validateTableSourceOptions;
-import static org.apache.flink.table.factories.FactoryUtil.SINK_PARALLELISM;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.DELIVERY_GUARANTEE;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.KEY_FIELDS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.KEY_FIELDS_PREFIX;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.KEY_FORMAT;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.PROPS_BOOTSTRAP_SERVERS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.PROPS_GROUP_ID;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_BOUNDED_MODE;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_BOUNDED_SPECIFIC_OFFSETS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_STARTUP_MODE;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_STARTUP_SPECIFIC_OFFSETS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SCAN_TOPIC_PARTITION_DISCOVERY;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SINK_PARALLELISM;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.SINK_PARTITIONER;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.TOPIC;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.TOPIC_PATTERN;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.TRANSACTIONAL_ID_PREFIX;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.VALUE_FIELDS_INCLUDE;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptions.VALUE_FORMAT;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.PROPERTIES_PREFIX;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.StartupOptions;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.autoCompleteSchemaRegistrySubject;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.createKeyFormatProjection;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.createValueFormatProjection;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getBoundedOptions;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getFlinkKafkaPartitioner;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getKafkaProperties;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getSourceTopicPattern;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getSourceTopics;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.getStartupOptions;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.validateTableSinkOptions;
+import static org.apache.flink.streaming.connectors.kafka.table.KafkaConnectorOptionsUtil.validateTableSourceOptions;
 
 /**
- * Factory for creating configured instances of {@link KafkaDynamicSource} and {@link KafkaDynamicSink}.
+ * Factory for creating configured instances of {@link KafkaDynamicSource} and {@link
+ * KafkaDynamicSink}.
  */
 @Internal
-public class KafkaDynamicTableFactory implements DynamicTableSourceFactory, DynamicTableSinkFactory {
+public class KafkaDynamicTableFactory
+        implements DynamicTableSourceFactory, DynamicTableSinkFactory {
 
-	public static final String IDENTIFIER = "kafka";
+    private static final Logger LOG = LoggerFactory.getLogger(KafkaDynamicTableFactory.class);
+    private static final ConfigOption<String> SINK_SEMANTIC =
+            ConfigOptions.key("sink.semantic")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("Optional semantic when committing.");
 
-	@Override
-	public String factoryIdentifier() {
-		return IDENTIFIER;
-	}
+    public static final String IDENTIFIER = "kafka";
 
-	@Override
-	public Set<ConfigOption<?>> requiredOptions() {
-		final Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(PROPS_BOOTSTRAP_SERVERS);
-		return options;
-	}
+    @Override
+    public String factoryIdentifier() {
+        return IDENTIFIER;
+    }
 
-	@Override
-	public Set<ConfigOption<?>> optionalOptions() {
-		final Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(FactoryUtil.FORMAT);
-		options.add(KEY_FORMAT);
-		options.add(KEY_FIELDS);
-		options.add(KEY_FIELDS_PREFIX);
-		options.add(VALUE_FORMAT);
-		options.add(VALUE_FIELDS_INCLUDE);
-		options.add(TOPIC);
-		options.add(TOPIC_PATTERN);
-		options.add(PROPS_GROUP_ID);
-		options.add(SCAN_STARTUP_MODE);
-		options.add(SCAN_STARTUP_SPECIFIC_OFFSETS);
-		options.add(SCAN_TOPIC_PARTITION_DISCOVERY);
-		options.add(SCAN_STARTUP_TIMESTAMP_MILLIS);
-		options.add(SINK_PARTITIONER);
-		options.add(SINK_SEMANTIC);
-		options.add(SINK_PARALLELISM);
-		return options;
-	}
+    @Override
+    public Set<ConfigOption<?>> requiredOptions() {
+        final Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(PROPS_BOOTSTRAP_SERVERS);
+        return options;
+    }
 
-	@Override
-	public DynamicTableSource createDynamicTableSource(Context context) {
-		final TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+    @Override
+    public Set<ConfigOption<?>> optionalOptions() {
+        final Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(FactoryUtil.FORMAT);
+        options.add(KEY_FORMAT);
+        options.add(KEY_FIELDS);
+        options.add(KEY_FIELDS_PREFIX);
+        options.add(VALUE_FORMAT);
+        options.add(VALUE_FIELDS_INCLUDE);
+        options.add(TOPIC);
+        options.add(TOPIC_PATTERN);
+        options.add(PROPS_GROUP_ID);
+        options.add(SCAN_STARTUP_MODE);
+        options.add(SCAN_STARTUP_SPECIFIC_OFFSETS);
+        options.add(SCAN_TOPIC_PARTITION_DISCOVERY);
+        options.add(SCAN_STARTUP_TIMESTAMP_MILLIS);
+        options.add(SINK_PARTITIONER);
+        options.add(SINK_PARALLELISM);
+        options.add(DELIVERY_GUARANTEE);
+        options.add(TRANSACTIONAL_ID_PREFIX);
+        options.add(SINK_SEMANTIC);
+        options.add(SCAN_BOUNDED_MODE);
+        options.add(SCAN_BOUNDED_SPECIFIC_OFFSETS);
+        options.add(SCAN_BOUNDED_TIMESTAMP_MILLIS);
+        return options;
+    }
 
-		final ReadableConfig tableOptions = helper.getOptions();
+    @Override
+    public Set<ConfigOption<?>> forwardOptions() {
+        return Stream.of(
+                        PROPS_BOOTSTRAP_SERVERS,
+                        PROPS_GROUP_ID,
+                        TOPIC,
+                        TOPIC_PATTERN,
+                        SCAN_STARTUP_MODE,
+                        SCAN_STARTUP_SPECIFIC_OFFSETS,
+                        SCAN_TOPIC_PARTITION_DISCOVERY,
+                        SCAN_STARTUP_TIMESTAMP_MILLIS,
+                        SINK_PARTITIONER,
+                        SINK_PARALLELISM,
+                        TRANSACTIONAL_ID_PREFIX)
+                .collect(Collectors.toSet());
+    }
 
-		final Optional<DecodingFormat<DeserializationSchema<RowData>>> keyDecodingFormat =
-				getKeyDecodingFormat(helper);
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        final TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
 
-		final DecodingFormat<DeserializationSchema<RowData>> valueDecodingFormat =
-				getValueDecodingFormat(helper);
+        final Optional<DecodingFormat<DeserializationSchema<RowData>>> keyDecodingFormat =
+                getKeyDecodingFormat(helper);
 
-		helper.validateExcept(PROPERTIES_PREFIX);
+        final DecodingFormat<DeserializationSchema<RowData>> valueDecodingFormat =
+                getValueDecodingFormat(helper);
 
-		validateTableSourceOptions(tableOptions);
+        helper.validateExcept(PROPERTIES_PREFIX);
 
-		validatePKConstraints(context.getObjectIdentifier(), context.getCatalogTable(), valueDecodingFormat);
+        final ReadableConfig tableOptions = helper.getOptions();
 
-		final StartupOptions startupOptions = getStartupOptions(tableOptions);
+        validateTableSourceOptions(tableOptions);
 
-		final Properties properties = getKafkaProperties(context.getCatalogTable().getOptions());
+        validatePKConstraints(
+                context.getObjectIdentifier(),
+                context.getPrimaryKeyIndexes(),
+                context.getCatalogTable().getOptions(),
+                valueDecodingFormat);
 
-		// add topic-partition discovery
-		properties.setProperty(FlinkKafkaConsumerBase.KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS,
-			String.valueOf(tableOptions
-				.getOptional(SCAN_TOPIC_PARTITION_DISCOVERY)
-				.map(Duration::toMillis)
-				.orElse(FlinkKafkaConsumerBase.PARTITION_DISCOVERY_DISABLED)));
+        final StartupOptions startupOptions = getStartupOptions(tableOptions);
 
-		final DataType physicalDataType = context.getCatalogTable().getSchema().toPhysicalRowDataType();
+        final BoundedOptions boundedOptions = getBoundedOptions(tableOptions);
 
-		final int[] keyProjection = createKeyFormatProjection(tableOptions, physicalDataType);
+        final Properties properties = getKafkaProperties(context.getCatalogTable().getOptions());
 
-		final int[] valueProjection = createValueFormatProjection(tableOptions, physicalDataType);
+        // add topic-partition discovery
+        final Optional<Long> partitionDiscoveryInterval =
+                tableOptions.getOptional(SCAN_TOPIC_PARTITION_DISCOVERY).map(Duration::toMillis);
+        properties.setProperty(
+                KafkaSourceOptions.PARTITION_DISCOVERY_INTERVAL_MS.key(),
+                partitionDiscoveryInterval.orElse(-1L).toString());
 
-		final String keyPrefix = tableOptions.getOptional(KEY_FIELDS_PREFIX).orElse(null);
+        final DataType physicalDataType = context.getPhysicalRowDataType();
 
-		return createKafkaTableSource(
-			physicalDataType,
-			keyDecodingFormat.orElse(null),
-			valueDecodingFormat,
-			keyProjection,
-			valueProjection,
-			keyPrefix,
-			KafkaOptions.getSourceTopics(tableOptions),
-			KafkaOptions.getSourceTopicPattern(tableOptions),
-			properties,
-			startupOptions.startupMode,
-			startupOptions.specificOffsets,
-			startupOptions.startupTimestampMillis);
-	}
+        final int[] keyProjection = createKeyFormatProjection(tableOptions, physicalDataType);
 
-	@Override
-	public DynamicTableSink createDynamicTableSink(Context context) {
-		final TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        final int[] valueProjection = createValueFormatProjection(tableOptions, physicalDataType);
 
-		final ReadableConfig tableOptions = helper.getOptions();
+        final String keyPrefix = tableOptions.getOptional(KEY_FIELDS_PREFIX).orElse(null);
 
-		final Optional<EncodingFormat<SerializationSchema<RowData>>> keyEncodingFormat =
-				getKeyEncodingFormat(helper);
+        return createKafkaTableSource(
+                physicalDataType,
+                keyDecodingFormat.orElse(null),
+                valueDecodingFormat,
+                keyProjection,
+                valueProjection,
+                keyPrefix,
+                getSourceTopics(tableOptions),
+                getSourceTopicPattern(tableOptions),
+                properties,
+                startupOptions.startupMode,
+                startupOptions.specificOffsets,
+                startupOptions.startupTimestampMillis,
+                boundedOptions.boundedMode,
+                boundedOptions.specificOffsets,
+                boundedOptions.boundedTimestampMillis,
+                context.getObjectIdentifier().asSummaryString());
+    }
 
-		final EncodingFormat<SerializationSchema<RowData>> valueEncodingFormat =
-				getValueEncodingFormat(helper);
+    @Override
+    public DynamicTableSink createDynamicTableSink(Context context) {
+        final TableFactoryHelper helper =
+                FactoryUtil.createTableFactoryHelper(
+                        this, autoCompleteSchemaRegistrySubject(context));
 
-		helper.validateExcept(PROPERTIES_PREFIX);
+        final Optional<EncodingFormat<SerializationSchema<RowData>>> keyEncodingFormat =
+                getKeyEncodingFormat(helper);
 
-		validateTableSinkOptions(tableOptions);
+        final EncodingFormat<SerializationSchema<RowData>> valueEncodingFormat =
+                getValueEncodingFormat(helper);
 
-		validatePKConstraints(context.getObjectIdentifier(), context.getCatalogTable(), valueEncodingFormat);
+        helper.validateExcept(PROPERTIES_PREFIX);
 
-		final DataType physicalDataType = context.getCatalogTable().getSchema().toPhysicalRowDataType();
+        final ReadableConfig tableOptions = helper.getOptions();
 
-		final int[] keyProjection = createKeyFormatProjection(tableOptions, physicalDataType);
+        final DeliveryGuarantee deliveryGuarantee = validateDeprecatedSemantic(tableOptions);
+        validateTableSinkOptions(tableOptions);
 
-		final int[] valueProjection = createValueFormatProjection(tableOptions, physicalDataType);
+        KafkaConnectorOptionsUtil.validateDeliveryGuarantee(tableOptions);
 
-		final String keyPrefix = tableOptions.getOptional(KEY_FIELDS_PREFIX).orElse(null);
+        validatePKConstraints(
+                context.getObjectIdentifier(),
+                context.getPrimaryKeyIndexes(),
+                context.getCatalogTable().getOptions(),
+                valueEncodingFormat);
 
-		final Integer parallelism = tableOptions.getOptional(SINK_PARALLELISM).orElse(null);
+        final DataType physicalDataType = context.getPhysicalRowDataType();
 
-		return createKafkaTableSink(
-				physicalDataType,
-				keyEncodingFormat.orElse(null),
-				valueEncodingFormat,
-				keyProjection,
-				valueProjection,
-				keyPrefix,
-				tableOptions.get(TOPIC).get(0),
-				getKafkaProperties(context.getCatalogTable().getOptions()),
-				getFlinkKafkaPartitioner(tableOptions, context.getClassLoader()).orElse(null),
-				getSinkSemantic(tableOptions),
-				parallelism);
-	}
+        final int[] keyProjection = createKeyFormatProjection(tableOptions, physicalDataType);
 
-	// --------------------------------------------------------------------------------------------
+        final int[] valueProjection = createValueFormatProjection(tableOptions, physicalDataType);
 
-	private static Optional<DecodingFormat<DeserializationSchema<RowData>>> getKeyDecodingFormat(
-			TableFactoryHelper helper) {
-		final Optional<DecodingFormat<DeserializationSchema<RowData>>> keyDecodingFormat =
-				helper.discoverOptionalDecodingFormat(
-						DeserializationFormatFactory.class,
-						KEY_FORMAT);
-		keyDecodingFormat.ifPresent(format -> {
-			if (!format.getChangelogMode().containsOnly(RowKind.INSERT)) {
-				throw new ValidationException(
-						String.format(
-								"A key format should only deal with INSERT-only records. "
-										+ "But %s has a changelog mode of %s.",
-								helper.getOptions().get(KEY_FORMAT),
-								format.getChangelogMode()));
-			}
-		});
-		return keyDecodingFormat;
-	}
+        final String keyPrefix = tableOptions.getOptional(KEY_FIELDS_PREFIX).orElse(null);
 
-	private static Optional<EncodingFormat<SerializationSchema<RowData>>> getKeyEncodingFormat(
-			TableFactoryHelper helper) {
-		final Optional<EncodingFormat<SerializationSchema<RowData>>> keyEncodingFormat =
-				helper.discoverOptionalEncodingFormat(
-						SerializationFormatFactory.class,
-						KEY_FORMAT);
-		keyEncodingFormat.ifPresent(format -> {
-			if (!format.getChangelogMode().containsOnly(RowKind.INSERT)) {
-				throw new ValidationException(
-						String.format(
-								"A key format should only deal with INSERT-only records. "
-										+ "But %s has a changelog mode of %s.",
-								helper.getOptions().get(KEY_FORMAT),
-								format.getChangelogMode()));
-			}
-		});
-		return keyEncodingFormat;
-	}
+        final Integer parallelism = tableOptions.getOptional(SINK_PARALLELISM).orElse(null);
 
-	private static DecodingFormat<DeserializationSchema<RowData>> getValueDecodingFormat(TableFactoryHelper helper) {
-		return helper.discoverOptionalDecodingFormat(DeserializationFormatFactory.class, FactoryUtil.FORMAT)
-			.orElseGet(() -> helper.discoverDecodingFormat(DeserializationFormatFactory.class, VALUE_FORMAT));
-	}
+        return createKafkaTableSink(
+                physicalDataType,
+                keyEncodingFormat.orElse(null),
+                valueEncodingFormat,
+                keyProjection,
+                valueProjection,
+                keyPrefix,
+                tableOptions.get(TOPIC).get(0),
+                getKafkaProperties(context.getCatalogTable().getOptions()),
+                getFlinkKafkaPartitioner(tableOptions, context.getClassLoader()).orElse(null),
+                deliveryGuarantee,
+                parallelism,
+                tableOptions.get(TRANSACTIONAL_ID_PREFIX));
+    }
 
-	private static EncodingFormat<SerializationSchema<RowData>> getValueEncodingFormat(TableFactoryHelper helper) {
-		return helper.discoverOptionalEncodingFormat(SerializationFormatFactory.class, FactoryUtil.FORMAT)
-			.orElseGet(() -> helper.discoverEncodingFormat(SerializationFormatFactory.class, VALUE_FORMAT));
-	}
+    // --------------------------------------------------------------------------------------------
 
-	private static void validatePKConstraints(ObjectIdentifier tableName, CatalogTable catalogTable, Format format) {
-		if (catalogTable.getSchema().getPrimaryKey().isPresent() && format.getChangelogMode().containsOnly(RowKind.INSERT)) {
-			Configuration options = Configuration.fromMap(catalogTable.getOptions());
-			String formatName = options.getOptional(FactoryUtil.FORMAT).orElse(options.get(VALUE_FORMAT));
-			throw new ValidationException(String.format(
-				"The Kafka table '%s' with '%s' format doesn't support defining PRIMARY KEY constraint" +
-					" on the table, because it can't guarantee the semantic of primary key.",
-				tableName.asSummaryString(),
-				formatName
-			));
-		}
-	}
+    private static Optional<DecodingFormat<DeserializationSchema<RowData>>> getKeyDecodingFormat(
+            TableFactoryHelper helper) {
+        final Optional<DecodingFormat<DeserializationSchema<RowData>>> keyDecodingFormat =
+                helper.discoverOptionalDecodingFormat(
+                        DeserializationFormatFactory.class, KEY_FORMAT);
+        keyDecodingFormat.ifPresent(
+                format -> {
+                    if (!format.getChangelogMode().containsOnly(RowKind.INSERT)) {
+                        throw new ValidationException(
+                                String.format(
+                                        "A key format should only deal with INSERT-only records. "
+                                                + "But %s has a changelog mode of %s.",
+                                        helper.getOptions().get(KEY_FORMAT),
+                                        format.getChangelogMode()));
+                    }
+                });
+        return keyDecodingFormat;
+    }
 
-	// --------------------------------------------------------------------------------------------
+    private static Optional<EncodingFormat<SerializationSchema<RowData>>> getKeyEncodingFormat(
+            TableFactoryHelper helper) {
+        final Optional<EncodingFormat<SerializationSchema<RowData>>> keyEncodingFormat =
+                helper.discoverOptionalEncodingFormat(SerializationFormatFactory.class, KEY_FORMAT);
+        keyEncodingFormat.ifPresent(
+                format -> {
+                    if (!format.getChangelogMode().containsOnly(RowKind.INSERT)) {
+                        throw new ValidationException(
+                                String.format(
+                                        "A key format should only deal with INSERT-only records. "
+                                                + "But %s has a changelog mode of %s.",
+                                        helper.getOptions().get(KEY_FORMAT),
+                                        format.getChangelogMode()));
+                    }
+                });
+        return keyEncodingFormat;
+    }
 
-	protected KafkaDynamicSource createKafkaTableSource(
-			DataType physicalDataType,
-			@Nullable DecodingFormat<DeserializationSchema<RowData>> keyDecodingFormat,
-			DecodingFormat<DeserializationSchema<RowData>> valueDecodingFormat,
-			int[] keyProjection,
-			int[] valueProjection,
-			@Nullable String keyPrefix,
-			@Nullable List<String> topics,
-			@Nullable Pattern topicPattern,
-			Properties properties,
-			StartupMode startupMode,
-			Map<KafkaTopicPartition, Long> specificStartupOffsets,
-			long startupTimestampMillis) {
-		return new KafkaDynamicSource(
-				physicalDataType,
-				keyDecodingFormat,
-				valueDecodingFormat,
-				keyProjection,
-				valueProjection,
-				keyPrefix,
-				topics,
-				topicPattern,
-				properties,
-				startupMode,
-				specificStartupOffsets,
-				startupTimestampMillis,
-				false);
-	}
+    private static DecodingFormat<DeserializationSchema<RowData>> getValueDecodingFormat(
+            TableFactoryHelper helper) {
+        return helper.discoverOptionalDecodingFormat(
+                        DeserializationFormatFactory.class, FactoryUtil.FORMAT)
+                .orElseGet(
+                        () ->
+                                helper.discoverDecodingFormat(
+                                        DeserializationFormatFactory.class, VALUE_FORMAT));
+    }
 
-	protected KafkaDynamicSink createKafkaTableSink(
-			DataType physicalDataType,
-			@Nullable EncodingFormat<SerializationSchema<RowData>> keyEncodingFormat,
-			EncodingFormat<SerializationSchema<RowData>> valueEncodingFormat,
-			int[] keyProjection,
-			int[] valueProjection,
-			@Nullable String keyPrefix,
-			String topic,
-			Properties properties,
-			FlinkKafkaPartitioner<RowData> partitioner,
-			KafkaSinkSemantic semantic,
-			Integer parallelism) {
-		return new KafkaDynamicSink(
-				physicalDataType,
-				keyEncodingFormat,
-				valueEncodingFormat,
-				keyProjection,
-				valueProjection,
-				keyPrefix,
-				topic,
-				properties,
-				partitioner,
-				semantic,
-				false,
-				parallelism);
-	}
+    private static EncodingFormat<SerializationSchema<RowData>> getValueEncodingFormat(
+            TableFactoryHelper helper) {
+        return helper.discoverOptionalEncodingFormat(
+                        SerializationFormatFactory.class, FactoryUtil.FORMAT)
+                .orElseGet(
+                        () ->
+                                helper.discoverEncodingFormat(
+                                        SerializationFormatFactory.class, VALUE_FORMAT));
+    }
+
+    private static void validatePKConstraints(
+            ObjectIdentifier tableName,
+            int[] primaryKeyIndexes,
+            Map<String, String> options,
+            Format format) {
+        if (primaryKeyIndexes.length > 0
+                && format.getChangelogMode().containsOnly(RowKind.INSERT)) {
+            Configuration configuration = Configuration.fromMap(options);
+            String formatName =
+                    configuration
+                            .getOptional(FactoryUtil.FORMAT)
+                            .orElse(configuration.get(VALUE_FORMAT));
+            throw new ValidationException(
+                    String.format(
+                            "The Kafka table '%s' with '%s' format doesn't support defining PRIMARY KEY constraint"
+                                    + " on the table, because it can't guarantee the semantic of primary key.",
+                            tableName.asSummaryString(), formatName));
+        }
+    }
+
+    private static DeliveryGuarantee validateDeprecatedSemantic(ReadableConfig tableOptions) {
+        if (tableOptions.getOptional(SINK_SEMANTIC).isPresent()) {
+            LOG.warn(
+                    "{} is deprecated and will be removed. Please use {} instead.",
+                    SINK_SEMANTIC.key(),
+                    DELIVERY_GUARANTEE.key());
+            return DeliveryGuarantee.valueOf(
+                    tableOptions.get(SINK_SEMANTIC).toUpperCase().replace("-", "_"));
+        }
+        return tableOptions.get(DELIVERY_GUARANTEE);
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    protected KafkaDynamicSource createKafkaTableSource(
+            DataType physicalDataType,
+            @Nullable DecodingFormat<DeserializationSchema<RowData>> keyDecodingFormat,
+            DecodingFormat<DeserializationSchema<RowData>> valueDecodingFormat,
+            int[] keyProjection,
+            int[] valueProjection,
+            @Nullable String keyPrefix,
+            @Nullable List<String> topics,
+            @Nullable Pattern topicPattern,
+            Properties properties,
+            StartupMode startupMode,
+            Map<KafkaTopicPartition, Long> specificStartupOffsets,
+            long startupTimestampMillis,
+            BoundedMode boundedMode,
+            Map<KafkaTopicPartition, Long> specificEndOffsets,
+            long endTimestampMillis,
+            String tableIdentifier) {
+        return new KafkaDynamicSource(
+                physicalDataType,
+                keyDecodingFormat,
+                valueDecodingFormat,
+                keyProjection,
+                valueProjection,
+                keyPrefix,
+                topics,
+                topicPattern,
+                properties,
+                startupMode,
+                specificStartupOffsets,
+                startupTimestampMillis,
+                boundedMode,
+                specificEndOffsets,
+                endTimestampMillis,
+                false,
+                tableIdentifier);
+    }
+
+    protected KafkaDynamicSink createKafkaTableSink(
+            DataType physicalDataType,
+            @Nullable EncodingFormat<SerializationSchema<RowData>> keyEncodingFormat,
+            EncodingFormat<SerializationSchema<RowData>> valueEncodingFormat,
+            int[] keyProjection,
+            int[] valueProjection,
+            @Nullable String keyPrefix,
+            String topic,
+            Properties properties,
+            FlinkKafkaPartitioner<RowData> partitioner,
+            DeliveryGuarantee deliveryGuarantee,
+            Integer parallelism,
+            @Nullable String transactionalIdPrefix) {
+        return new KafkaDynamicSink(
+                physicalDataType,
+                physicalDataType,
+                keyEncodingFormat,
+                valueEncodingFormat,
+                keyProjection,
+                valueProjection,
+                keyPrefix,
+                topic,
+                properties,
+                partitioner,
+                deliveryGuarantee,
+                false,
+                SinkBufferFlushMode.DISABLED,
+                parallelism,
+                transactionalIdPrefix);
+    }
 }

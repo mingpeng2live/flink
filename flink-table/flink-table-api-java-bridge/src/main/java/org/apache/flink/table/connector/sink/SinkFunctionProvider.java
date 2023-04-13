@@ -23,41 +23,40 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.table.connector.ParallelismProvider;
 import org.apache.flink.table.data.RowData;
 
+import javax.annotation.Nullable;
+
 import java.util.Optional;
 
 /**
- * Provider of a {@link SinkFunction} instance as a runtime implementation for {@link DynamicTableSink}.
+ * Provider of a {@link SinkFunction} instance as a runtime implementation for {@link
+ * DynamicTableSink}.
  */
 @PublicEvolving
-public interface SinkFunctionProvider extends DynamicTableSink.SinkRuntimeProvider, ParallelismProvider {
+public interface SinkFunctionProvider
+        extends DynamicTableSink.SinkRuntimeProvider, ParallelismProvider {
 
-	/**
-	 * Helper method for creating a static provider.
-	 */
-	static SinkFunctionProvider of(SinkFunction<RowData> sinkFunction) {
-		return () -> sinkFunction;
-	}
+    /** Helper method for creating a static provider. */
+    static SinkFunctionProvider of(SinkFunction<RowData> sinkFunction) {
+        return () -> sinkFunction;
+    }
 
-	/**
-	 * Helper method for creating a SinkFunction provider with a provided sink parallelism.
-	 */
-	static SinkFunctionProvider of(SinkFunction<RowData> sinkFunction, Integer sinkParallelism) {
-		return new SinkFunctionProvider() {
+    /** Helper method for creating a SinkFunction provider with a provided sink parallelism. */
+    static SinkFunctionProvider of(
+            SinkFunction<RowData> sinkFunction, @Nullable Integer sinkParallelism) {
+        return new SinkFunctionProvider() {
 
-			@Override
-			public SinkFunction<RowData> createSinkFunction() {
-				return sinkFunction;
-			}
+            @Override
+            public SinkFunction<RowData> createSinkFunction() {
+                return sinkFunction;
+            }
 
-			@Override
-			public Optional<Integer> getParallelism() {
-				return Optional.ofNullable(sinkParallelism);
-			}
-		};
-	}
+            @Override
+            public Optional<Integer> getParallelism() {
+                return Optional.ofNullable(sinkParallelism);
+            }
+        };
+    }
 
-	/**
-	 * Creates a {@link SinkFunction} instance.
-	 */
-	SinkFunction<RowData> createSinkFunction();
+    /** Creates a {@link SinkFunction} instance. */
+    SinkFunction<RowData> createSinkFunction();
 }

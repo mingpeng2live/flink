@@ -18,12 +18,15 @@
 
 package org.apache.flink.formats.json.debezium;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.formats.json.JsonOptions;
-import org.apache.flink.formats.json.TimestampFormat;
+import org.apache.flink.formats.common.TimestampFormat;
+import org.apache.flink.formats.json.JsonFormatOptions;
+import org.apache.flink.formats.json.JsonFormatOptionsUtil;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -41,88 +44,118 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.IGNORE_PARSE_ERRORS;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.JSON_MAP_NULL_KEY_LITERAL;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.JSON_MAP_NULL_KEY_MODE;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.SCHEMA_INCLUDE;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.TIMESTAMP_FORMAT;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.validateDecodingFormatOptions;
-import static org.apache.flink.formats.json.debezium.DebeziumJsonOptions.validateEncodingFormatOptions;
+import static org.apache.flink.formats.json.JsonFormatOptions.ENCODE_DECIMAL_AS_PLAIN_NUMBER;
+import static org.apache.flink.formats.json.debezium.DebeziumJsonFormatOptions.IGNORE_PARSE_ERRORS;
+import static org.apache.flink.formats.json.debezium.DebeziumJsonFormatOptions.JSON_MAP_NULL_KEY_LITERAL;
+import static org.apache.flink.formats.json.debezium.DebeziumJsonFormatOptions.JSON_MAP_NULL_KEY_MODE;
+import static org.apache.flink.formats.json.debezium.DebeziumJsonFormatOptions.SCHEMA_INCLUDE;
+import static org.apache.flink.formats.json.debezium.DebeziumJsonFormatOptions.TIMESTAMP_FORMAT;
 
 /**
- * Format factory for providing configured instances of Debezium JSON to RowData {@link DeserializationSchema}.
+ * Format factory for providing configured instances of Debezium JSON to RowData {@link
+ * DeserializationSchema}.
  */
-public class DebeziumJsonFormatFactory implements DeserializationFormatFactory, SerializationFormatFactory {
+@Internal
+public class DebeziumJsonFormatFactory
+        implements DeserializationFormatFactory, SerializationFormatFactory {
 
-	public static final String IDENTIFIER = "debezium-json";
+    public static final String IDENTIFIER = "debezium-json";
 
-	@Override
-	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatOptions) {
+    @Override
+    public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatOptions) {
 
-		FactoryUtil.validateFactoryOptions(this, formatOptions);
-		validateDecodingFormatOptions(formatOptions);
+        FactoryUtil.validateFactoryOptions(this, formatOptions);
+        validateDecodingFormatOptions(formatOptions);
 
-		final boolean schemaInclude = formatOptions.get(SCHEMA_INCLUDE);
+        final boolean schemaInclude = formatOptions.get(SCHEMA_INCLUDE);
 
-		final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+        final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
 
-		final TimestampFormat timestampFormat = JsonOptions.getTimestampFormat(formatOptions);
+        final TimestampFormat timestampFormat =
+                JsonFormatOptionsUtil.getTimestampFormat(formatOptions);
 
-		return new DebeziumJsonDecodingFormat(schemaInclude, ignoreParseErrors, timestampFormat);
-	}
+        return new DebeziumJsonDecodingFormat(schemaInclude, ignoreParseErrors, timestampFormat);
+    }
 
-	@Override
-	public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatOptions) {
+    @Override
+    public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatOptions) {
 
-		FactoryUtil.validateFactoryOptions(this, formatOptions);
-		validateEncodingFormatOptions(formatOptions);
+        FactoryUtil.validateFactoryOptions(this, formatOptions);
+        validateEncodingFormatOptions(formatOptions);
 
-		TimestampFormat timestampFormat = JsonOptions.getTimestampFormat(formatOptions);
-		JsonOptions.MapNullKeyMode mapNullKeyMode = JsonOptions.getMapNullKeyMode(formatOptions);
-		String mapNullKeyLiteral = formatOptions.get(JSON_MAP_NULL_KEY_LITERAL);
+        TimestampFormat timestampFormat = JsonFormatOptionsUtil.getTimestampFormat(formatOptions);
+        JsonFormatOptions.MapNullKeyMode mapNullKeyMode =
+                JsonFormatOptionsUtil.getMapNullKeyMode(formatOptions);
+        String mapNullKeyLiteral = formatOptions.get(JSON_MAP_NULL_KEY_LITERAL);
 
-		return new EncodingFormat<SerializationSchema<RowData>>() {
+        final boolean encodeDecimalAsPlainNumber =
+                formatOptions.get(ENCODE_DECIMAL_AS_PLAIN_NUMBER);
 
-			@Override
-			public ChangelogMode getChangelogMode() {
-				return ChangelogMode.newBuilder()
-					.addContainedKind(RowKind.INSERT)
-					.addContainedKind(RowKind.UPDATE_BEFORE)
-					.addContainedKind(RowKind.UPDATE_AFTER)
-					.addContainedKind(RowKind.DELETE)
-					.build();
-			}
+        return new EncodingFormat<SerializationSchema<RowData>>() {
 
-			@Override
-			public SerializationSchema<RowData> createRuntimeEncoder(DynamicTableSink.Context context, DataType consumedDataType) {
-				final RowType rowType = (RowType) consumedDataType.getLogicalType();
-				return new DebeziumJsonSerializationSchema(rowType, timestampFormat, mapNullKeyMode, mapNullKeyLiteral);
-			}
-		};
-	}
+            @Override
+            public ChangelogMode getChangelogMode() {
+                return ChangelogMode.newBuilder()
+                        .addContainedKind(RowKind.INSERT)
+                        .addContainedKind(RowKind.UPDATE_BEFORE)
+                        .addContainedKind(RowKind.UPDATE_AFTER)
+                        .addContainedKind(RowKind.DELETE)
+                        .build();
+            }
 
-	@Override
-	public String factoryIdentifier() {
-		return IDENTIFIER;
-	}
+            @Override
+            public SerializationSchema<RowData> createRuntimeEncoder(
+                    DynamicTableSink.Context context, DataType consumedDataType) {
+                final RowType rowType = (RowType) consumedDataType.getLogicalType();
+                return new DebeziumJsonSerializationSchema(
+                        rowType,
+                        timestampFormat,
+                        mapNullKeyMode,
+                        mapNullKeyLiteral,
+                        encodeDecimalAsPlainNumber);
+            }
+        };
+    }
 
-	@Override
-	public Set<ConfigOption<?>> requiredOptions() {
-		return Collections.emptySet();
-	}
+    @Override
+    public String factoryIdentifier() {
+        return IDENTIFIER;
+    }
 
-	@Override
-	public Set<ConfigOption<?>> optionalOptions() {
-		Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(SCHEMA_INCLUDE);
-		options.add(IGNORE_PARSE_ERRORS);
-		options.add(TIMESTAMP_FORMAT);
-		options.add(JSON_MAP_NULL_KEY_MODE);
-		options.add(JSON_MAP_NULL_KEY_LITERAL);
-		return options;
-	}
+    @Override
+    public Set<ConfigOption<?>> requiredOptions() {
+        return Collections.emptySet();
+    }
+
+    @Override
+    public Set<ConfigOption<?>> optionalOptions() {
+        Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(SCHEMA_INCLUDE);
+        options.add(IGNORE_PARSE_ERRORS);
+        options.add(TIMESTAMP_FORMAT);
+        options.add(JSON_MAP_NULL_KEY_MODE);
+        options.add(JSON_MAP_NULL_KEY_LITERAL);
+        options.add(ENCODE_DECIMAL_AS_PLAIN_NUMBER);
+        return options;
+    }
+
+    /** Validator for debezium decoding format. */
+    private static void validateDecodingFormatOptions(ReadableConfig tableOptions) {
+        JsonFormatOptionsUtil.validateDecodingFormatOptions(tableOptions);
+    }
+
+    /** Validator for debezium encoding format. */
+    private static void validateEncodingFormatOptions(ReadableConfig tableOptions) {
+        JsonFormatOptionsUtil.validateEncodingFormatOptions(tableOptions);
+
+        // validator for {@link SCHEMA_INCLUDE}
+        if (tableOptions.get(SCHEMA_INCLUDE)) {
+            throw new ValidationException(
+                    String.format(
+                            "Debezium JSON serialization doesn't support '%s.%s' option been set to true.",
+                            IDENTIFIER, SCHEMA_INCLUDE.key()));
+        }
+    }
 }

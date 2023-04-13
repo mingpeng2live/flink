@@ -20,13 +20,19 @@ package org.apache.flink.runtime.executiongraph;
 
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
-import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
 import org.apache.flink.runtime.jobgraph.JobVertex;
+import org.apache.flink.runtime.jobgraph.JobVertex.FinalizeOnMasterContext;
 import org.apache.flink.runtime.scheduler.SchedulerBase;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.TestLogger;
 
+import org.junit.ClassRule;
 import org.junit.Test;
+
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.apache.flink.runtime.scheduler.SchedulerTestingUtils.createScheduler;
 import static org.junit.Assert.assertEquals;
@@ -36,65 +42,76 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 /**
- * Tests that the {@link JobVertex#finalizeOnMaster(ClassLoader)} is called properly and
- * only when the execution graph reaches the a successful final state.
+ * Tests that the {@link JobVertex#finalizeOnMaster(ClassLoader)} is called properly and only when
+ * the execution graph reaches the a successful final state.
  */
 public class FinalizeOnMasterTest extends TestLogger {
 
-	@Test
-	public void testFinalizeIsCalledUponSuccess() throws Exception {
-		final JobVertex vertex1 = spy(new JobVertex("test vertex 1"));
-		vertex1.setInvokableClass(NoOpInvokable.class);
-		vertex1.setParallelism(3);
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
 
-		final JobVertex vertex2 = spy(new JobVertex("test vertex 2"));
-		vertex2.setInvokableClass(NoOpInvokable.class);
-		vertex2.setParallelism(2);
+    @Test
+    public void testFinalizeIsCalledUponSuccess() throws Exception {
+        final JobVertex vertex1 = spy(new JobVertex("test vertex 1"));
+        vertex1.setInvokableClass(NoOpInvokable.class);
+        vertex1.setParallelism(3);
 
-		final SchedulerBase scheduler = createScheduler(new JobGraph("Test Job", vertex1, vertex2));
-		scheduler.initialize(ComponentMainThreadExecutorServiceAdapter.forMainThread());
-		scheduler.startScheduling();
+        final JobVertex vertex2 = spy(new JobVertex("test vertex 2"));
+        vertex2.setInvokableClass(NoOpInvokable.class);
+        vertex2.setParallelism(2);
 
-		final ExecutionGraph eg = scheduler.getExecutionGraph();
+        final SchedulerBase scheduler =
+                createScheduler(
+                        JobGraphTestUtils.streamingJobGraph(vertex1, vertex2),
+                        ComponentMainThreadExecutorServiceAdapter.forMainThread(),
+                        EXECUTOR_RESOURCE.getExecutor());
+        scheduler.startScheduling();
 
-		assertEquals(JobStatus.RUNNING, eg.getState());
+        final ExecutionGraph eg = scheduler.getExecutionGraph();
 
-		ExecutionGraphTestUtils.switchAllVerticesToRunning(eg);
+        assertEquals(JobStatus.RUNNING, eg.getState());
 
-		// move all vertices to finished state
-		ExecutionGraphTestUtils.finishAllVertices(eg);
-		assertEquals(JobStatus.FINISHED, eg.waitUntilTerminal());
+        ExecutionGraphTestUtils.switchAllVerticesToRunning(eg);
 
-		verify(vertex1, times(1)).finalizeOnMaster(any(ClassLoader.class));
-		verify(vertex2, times(1)).finalizeOnMaster(any(ClassLoader.class));
+        // move all vertices to finished state
+        ExecutionGraphTestUtils.finishAllVertices(eg);
+        assertEquals(JobStatus.FINISHED, eg.waitUntilTerminal());
 
-		assertEquals(0, eg.getRegisteredExecutions().size());
-	}
+        verify(vertex1, times(1)).finalizeOnMaster(any(FinalizeOnMasterContext.class));
+        verify(vertex2, times(1)).finalizeOnMaster(any(FinalizeOnMasterContext.class));
 
-	@Test
-	public void testFinalizeIsNotCalledUponFailure() throws Exception {
-		final JobVertex vertex = spy(new JobVertex("test vertex 1"));
-		vertex.setInvokableClass(NoOpInvokable.class);
-		vertex.setParallelism(1);
+        assertEquals(0, eg.getRegisteredExecutions().size());
+    }
 
-		final SchedulerBase scheduler = createScheduler(new JobGraph("Test Job", vertex));
-		scheduler.initialize(ComponentMainThreadExecutorServiceAdapter.forMainThread());
-		scheduler.startScheduling();
+    @Test
+    public void testFinalizeIsNotCalledUponFailure() throws Exception {
+        final JobVertex vertex = spy(new JobVertex("test vertex 1"));
+        vertex.setInvokableClass(NoOpInvokable.class);
+        vertex.setParallelism(1);
 
-		final ExecutionGraph eg = scheduler.getExecutionGraph();
+        final SchedulerBase scheduler =
+                createScheduler(
+                        JobGraphTestUtils.streamingJobGraph(vertex),
+                        ComponentMainThreadExecutorServiceAdapter.forMainThread(),
+                        EXECUTOR_RESOURCE.getExecutor());
+        scheduler.startScheduling();
 
-		assertEquals(JobStatus.RUNNING, eg.getState());
+        final ExecutionGraph eg = scheduler.getExecutionGraph();
 
-		ExecutionGraphTestUtils.switchAllVerticesToRunning(eg);
+        assertEquals(JobStatus.RUNNING, eg.getState());
 
-		// fail the execution
-		final Execution exec = eg.getJobVertex(vertex.getID()).getTaskVertices()[0].getCurrentExecutionAttempt();
-		exec.fail(new Exception("test"));
+        ExecutionGraphTestUtils.switchAllVerticesToRunning(eg);
 
-		assertEquals(JobStatus.FAILED, eg.waitUntilTerminal());
+        // fail the execution
+        final Execution exec =
+                eg.getJobVertex(vertex.getID()).getTaskVertices()[0].getCurrentExecutionAttempt();
+        exec.fail(new Exception("test"));
 
-		verify(vertex, times(0)).finalizeOnMaster(any(ClassLoader.class));
+        assertEquals(JobStatus.FAILED, eg.waitUntilTerminal());
 
-		assertEquals(0, eg.getRegisteredExecutions().size());
-	}
+        verify(vertex, times(0)).finalizeOnMaster(any(FinalizeOnMasterContext.class));
+
+        assertEquals(0, eg.getRegisteredExecutions().size());
+    }
 }

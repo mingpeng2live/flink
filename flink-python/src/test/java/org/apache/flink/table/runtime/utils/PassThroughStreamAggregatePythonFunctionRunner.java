@@ -19,65 +19,84 @@
 package org.apache.flink.table.runtime.utils;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
-import org.apache.flink.python.env.PythonEnvironmentManager;
-import org.apache.flink.python.metric.FlinkMetricContainer;
+import org.apache.flink.python.env.process.ProcessPythonEnvironmentManager;
+import org.apache.flink.python.metric.process.FlinkMetricContainer;
 import org.apache.flink.runtime.state.KeyedStateBackend;
-import org.apache.flink.table.runtime.runners.python.beam.BeamTableStatefulPythonFunctionRunner;
+import org.apache.flink.table.runtime.runners.python.beam.BeamTablePythonFunctionRunner;
 import org.apache.flink.table.types.logical.RowType;
 
 import org.apache.beam.runners.fnexecution.control.JobBundleFactory;
-import org.apache.beam.vendor.grpc.v1p26p0.com.google.protobuf.Struct;
+import org.apache.beam.vendor.grpc.v1p48p1.com.google.protobuf.Struct;
 
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import static org.apache.flink.python.Constants.OUTPUT_COLLECTION_ID;
+import static org.apache.flink.python.util.ProtoUtils.createRowTypeCoderInfoDescriptorProto;
 
 /**
- * A {@link PassThroughStreamAggregatePythonFunctionRunner} runner that help to test the Python stream group
- * aggregate operators. It will process the input data with the provided `processFunction`.
+ * A {@link PassThroughStreamAggregatePythonFunctionRunner} runner that help to test the Python
+ * stream group aggregate operators. It will process the input data with the provided
+ * `processFunction`.
  */
-public class PassThroughStreamAggregatePythonFunctionRunner extends BeamTableStatefulPythonFunctionRunner {
+public class PassThroughStreamAggregatePythonFunctionRunner extends BeamTablePythonFunctionRunner {
 
-	private final List<byte[]> buffer;
+    private final List<byte[]> buffer;
 
-	private final Function<byte[], byte[]> processFunction;
+    private final Function<byte[], byte[]> processFunction;
 
-	public PassThroughStreamAggregatePythonFunctionRunner(
-			String taskName,
-			PythonEnvironmentManager environmentManager,
-			RowType inputType,
-			RowType outputType,
-			String functionUrn,
-			FlinkFnApi.UserDefinedAggregateFunctions userDefinedFunctions,
-			String coderUrn,
-			Map<String, String> jobOptions,
-			FlinkMetricContainer flinkMetricContainer,
-			KeyedStateBackend keyedStateBackend,
-			TypeSerializer keySerializer,
-			Function<byte[], byte[]> processFunction) {
-		super(taskName, environmentManager, inputType, outputType, functionUrn, userDefinedFunctions,
-			coderUrn, jobOptions, flinkMetricContainer, keyedStateBackend, keySerializer, null, 0.0);
-		this.buffer = new LinkedList<>();
-		this.processFunction = processFunction;
-	}
+    public PassThroughStreamAggregatePythonFunctionRunner(
+            String taskName,
+            ProcessPythonEnvironmentManager environmentManager,
+            RowType inputType,
+            RowType outputType,
+            String functionUrn,
+            FlinkFnApi.UserDefinedAggregateFunctions userDefinedFunctions,
+            FlinkMetricContainer flinkMetricContainer,
+            KeyedStateBackend keyedStateBackend,
+            TypeSerializer keySerializer,
+            Function<byte[], byte[]> processFunction) {
+        super(
+                taskName,
+                environmentManager,
+                functionUrn,
+                userDefinedFunctions,
+                flinkMetricContainer,
+                keyedStateBackend,
+                keySerializer,
+                null,
+                null,
+                0.0,
+                createRowTypeCoderInfoDescriptorProto(
+                        inputType, FlinkFnApi.CoderInfoDescriptor.Mode.MULTIPLE, false),
+                createRowTypeCoderInfoDescriptorProto(
+                        outputType, FlinkFnApi.CoderInfoDescriptor.Mode.MULTIPLE, false));
+        this.buffer = new LinkedList<>();
+        this.processFunction = processFunction;
+    }
 
-	@Override
-	protected void startBundle() {
-		super.startBundle();
-		this.mainInputReceiver = input -> buffer.add(processFunction.apply(input.getValue()));
-	}
+    @Override
+    protected void startBundle() {
+        super.startBundle();
+        this.mainInputReceiver = input -> buffer.add(processFunction.apply(input.getValue()));
+    }
 
-	@Override
-	public void flush() throws Exception {
-		super.flush();
-		resultBuffer.addAll(buffer);
-		buffer.clear();
-	}
+    @Override
+    public void flush() throws Exception {
+        super.flush();
+        resultBuffer.addAll(
+                buffer.stream()
+                        .map(b -> Tuple2.of(OUTPUT_COLLECTION_ID, b))
+                        .collect(Collectors.toList()));
+        buffer.clear();
+    }
 
-	@Override
-	public JobBundleFactory createJobBundleFactory(Struct pipelineOptions) {
-		return PythonTestUtils.createMockJobBundleFactory();
-	}
+    @Override
+    public JobBundleFactory createJobBundleFactory(Struct pipelineOptions) {
+        return PythonTestUtils.createMockJobBundleFactory();
+    }
 }

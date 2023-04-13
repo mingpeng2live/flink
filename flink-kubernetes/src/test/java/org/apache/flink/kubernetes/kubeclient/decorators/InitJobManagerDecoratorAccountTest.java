@@ -23,42 +23,43 @@ import org.apache.flink.kubernetes.kubeclient.FlinkPod;
 import org.apache.flink.kubernetes.kubeclient.KubernetesJobManagerTestBase;
 
 import io.fabric8.kubernetes.api.model.Pod;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link InitJobManagerDecorator} decorating service account.
- */
-public class InitJobManagerDecoratorAccountTest extends KubernetesJobManagerTestBase {
+/** Tests for {@link InitJobManagerDecorator} decorating service account. */
+class InitJobManagerDecoratorAccountTest extends KubernetesJobManagerTestBase {
 
-	private static final String SERVICE_ACCOUNT_NAME = "service-test";
-	private static final String JOB_MANGER_SERVICE_ACCOUNT_NAME = "jm-service-test";
+    private static final String SERVICE_ACCOUNT_NAME = "service-test";
+    private static final String JOB_MANAGER_SERVICE_ACCOUNT_NAME = "jm-service-test";
 
-	private Pod resultPod;
+    private Pod resultPod;
 
-	@Override
-	protected void setupFlinkConfig() {
-		super.setupFlinkConfig();
+    @Override
+    protected void setupFlinkConfig() {
+        super.setupFlinkConfig();
 
-		this.flinkConfig.set(KubernetesConfigOptions.KUBERNETES_SERVICE_ACCOUNT, SERVICE_ACCOUNT_NAME);
-		this.flinkConfig.set(KubernetesConfigOptions.JOB_MANAGER_SERVICE_ACCOUNT, JOB_MANGER_SERVICE_ACCOUNT_NAME);
-	}
+        this.flinkConfig.set(
+                KubernetesConfigOptions.KUBERNETES_SERVICE_ACCOUNT, SERVICE_ACCOUNT_NAME);
+        this.flinkConfig.set(
+                KubernetesConfigOptions.JOB_MANAGER_SERVICE_ACCOUNT,
+                JOB_MANAGER_SERVICE_ACCOUNT_NAME);
+    }
 
-	@Override
-	protected void onSetup() throws Exception {
-		super.onSetup();
+    @Override
+    protected void onSetup() throws Exception {
+        super.onSetup();
 
-		final InitJobManagerDecorator initJobManagerDecorator =
-			new InitJobManagerDecorator(this.kubernetesJobManagerParameters);
-		final FlinkPod resultFlinkPod = initJobManagerDecorator.decorateFlinkPod(this.baseFlinkPod);
+        final InitJobManagerDecorator initJobManagerDecorator =
+                new InitJobManagerDecorator(this.kubernetesJobManagerParameters);
+        final FlinkPod resultFlinkPod = initJobManagerDecorator.decorateFlinkPod(this.baseFlinkPod);
 
-		this.resultPod = resultFlinkPod.getPod();
-	}
+        this.resultPod = resultFlinkPod.getPodWithoutMainContainer();
+    }
 
-	@Test
-	public void testPodServiceAccountName() {
-		assertThat(this.resultPod.getSpec().getServiceAccountName(), is(JOB_MANGER_SERVICE_ACCOUNT_NAME));
-	}
+    @Test
+    void testPodServiceAccountName() {
+        assertThat(this.resultPod.getSpec().getServiceAccountName())
+                .isEqualTo(JOB_MANAGER_SERVICE_ACCOUNT_NAME);
+    }
 }

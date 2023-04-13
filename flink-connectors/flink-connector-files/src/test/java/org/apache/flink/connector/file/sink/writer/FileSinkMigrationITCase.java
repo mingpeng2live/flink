@@ -23,10 +23,9 @@ import org.apache.flink.api.common.JobSubmissionResult;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.connector.file.sink.utils.IntegerFileSinkTestDataUtils;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
@@ -40,248 +39,253 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.util.TestLogger;
+import org.apache.flink.testutils.junit.SharedObjectsExtension;
+import org.apache.flink.testutils.junit.SharedReference;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+
+import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests migrating from {@link StreamingFileSink} to {@link FileSink}. It trigger a savepoint
- * for the {@link StreamingFileSink} job and restore the {@link FileSink} job from the savepoint
- * taken.
+ * Tests migrating from {@link StreamingFileSink} to {@link FileSink}. It trigger a savepoint for
+ * the {@link StreamingFileSink} job and restore the {@link FileSink} job from the savepoint taken.
  */
-public class FileSinkMigrationITCase extends TestLogger {
+class FileSinkMigrationITCase {
 
-	@ClassRule
-	public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @RegisterExtension
+    private final SharedObjectsExtension sharedObjects = SharedObjectsExtension.create();
 
-	private static final String SOURCE_UID = "source";
+    private static final String SOURCE_UID = "source";
 
-	private static final String SINK_UID = "sink";
+    private static final String SINK_UID = "sink";
 
-	private static final int NUM_SOURCES = 4;
+    private static final int NUM_SOURCES = 4;
 
-	private static final int NUM_SINKS = 3;
+    private static final int NUM_SINKS = 3;
 
-	private static final int NUM_RECORDS = 10000;
+    private static final int NUM_RECORDS = 10000;
 
-	private static final int NUM_BUCKETS = 4;
+    private static final int NUM_BUCKETS = 4;
 
-	private static final Map<String, CountDownLatch> SAVEPOINT_LATCH_MAP = new ConcurrentHashMap<>();
+    private SharedReference<CountDownLatch> finalCheckpointLatch;
 
-	private static final Map<String, CountDownLatch> FINAL_CHECKPOINT_LATCH_MAP = new ConcurrentHashMap<>();
+    @BeforeEach
+    void setup() {
+        // We wait for two successful checkpoints in sources before shutting down. This ensures that
+        // the sink can commit its data.
+        // We need to keep a "static" latch here because all sources need to be kept running
+        // while we're waiting for the required number of checkpoints. Otherwise, we would lock up
+        // because we can only do checkpoints while all operators are running.
+        finalCheckpointLatch = sharedObjects.add(new CountDownLatch(NUM_SOURCES * 2));
+    }
 
-	private String latchId;
+    @Test
+    void test() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        SharedReference<Collection<Long>> list = sharedObjects.add(new ArrayList<>());
+        int n = 10000;
+        env.setParallelism(100);
+        env.fromSequence(0, n).map(i -> list.applySync(l -> l.add(i)));
+        env.execute();
+        assertThat(list.get()).hasSize(n + 1);
+        assertThat(LongStream.rangeClosed(0, n).boxed().collect(Collectors.toList()))
+                .isEqualTo(list.get().stream().sorted().collect(Collectors.toList()));
+    }
 
-	@Before
-	public void setup() {
-		this.latchId = UUID.randomUUID().toString();
-		SAVEPOINT_LATCH_MAP.put(latchId, new CountDownLatch(NUM_SOURCES));
+    @Test
+    void testMigration(
+            @TempDir java.nio.file.Path tmpOutputDir, @TempDir java.nio.file.Path tmpSavepointDir)
+            throws Exception {
+        String outputPath = tmpOutputDir.toString();
+        String savepointBasePath = tmpSavepointDir.toString();
 
-		// We wait for two successful checkpoints in sources before shutting down. This ensures that
-		// the sink can commit its data.
-		// We need to keep a "static" latch here because all sources need to be kept running
-		// while we're waiting for the required number of checkpoints. Otherwise, we would lock up
-		// because we can only do checkpoints while all operators are running.
-		FINAL_CHECKPOINT_LATCH_MAP.put(latchId, new CountDownLatch(NUM_SOURCES * 2));
-	}
+        final MiniClusterConfiguration cfg =
+                new MiniClusterConfiguration.Builder()
+                        .withRandomPorts()
+                        .setNumTaskManagers(1)
+                        .setNumSlotsPerTaskManager(4)
+                        .build();
 
-	@After
-	public void teardown() {
-		SAVEPOINT_LATCH_MAP.remove(latchId);
-		FINAL_CHECKPOINT_LATCH_MAP.remove(latchId);
-	}
+        JobGraph streamingFileSinkJobGraph = createStreamingFileSinkJobGraph(outputPath);
+        String savepointPath =
+                executeAndTakeSavepoint(cfg, streamingFileSinkJobGraph, savepointBasePath);
 
-	@Test
-	public void testMigration() throws Exception {
-		String outputPath = TEMPORARY_FOLDER.newFolder().getAbsolutePath();
-		String savepointBasePath = TEMPORARY_FOLDER.newFolder().getAbsolutePath();
+        JobGraph fileSinkJobGraph = createFileSinkJobGraph(outputPath);
+        loadSavepointAndExecute(cfg, fileSinkJobGraph, savepointPath);
 
-		final Configuration config = new Configuration();
-		config.setString(RestOptions.BIND_PORT, "18081-19000");
-		final MiniClusterConfiguration cfg = new MiniClusterConfiguration.Builder()
-				.setNumTaskManagers(1)
-				.setNumSlotsPerTaskManager(4)
-				.setConfiguration(config)
-				.build();
+        IntegerFileSinkTestDataUtils.checkIntegerSequenceSinkOutput(
+                outputPath, NUM_RECORDS, NUM_BUCKETS, NUM_SOURCES);
+    }
 
-		JobGraph streamingFileSinkJobGraph = createStreamingFileSinkJobGraph(outputPath);
-		String savepointPath = executeAndTakeSavepoint(cfg, streamingFileSinkJobGraph, savepointBasePath);
+    private JobGraph createStreamingFileSinkJobGraph(String outputPath) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.enableCheckpointing(500, CheckpointingMode.EXACTLY_ONCE);
 
-		JobGraph fileSinkJobGraph = createFileSinkJobGraph(outputPath);
-		loadSavepointAndExecute(cfg, fileSinkJobGraph, savepointPath);
+        StreamingFileSink<Integer> sink =
+                StreamingFileSink.forRowFormat(
+                                new Path(outputPath), new IntegerFileSinkTestDataUtils.IntEncoder())
+                        .withBucketAssigner(
+                                new IntegerFileSinkTestDataUtils.ModuloBucketAssigner(NUM_BUCKETS))
+                        .withRollingPolicy(OnCheckpointRollingPolicy.build())
+                        .build();
 
-		IntegerFileSinkTestDataUtils.checkIntegerSequenceSinkOutput(outputPath, NUM_RECORDS, NUM_BUCKETS, NUM_SOURCES);
-	}
+        env.addSource(new StatefulSource(true, finalCheckpointLatch))
+                .uid(SOURCE_UID)
+                .setParallelism(NUM_SOURCES)
+                .addSink(sink)
+                .setParallelism(NUM_SINKS)
+                .uid(SINK_UID);
+        return env.getStreamGraph().getJobGraph();
+    }
 
-	private JobGraph createStreamingFileSinkJobGraph(String outputPath) {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.enableCheckpointing(500, CheckpointingMode.EXACTLY_ONCE);
+    private JobGraph createFileSinkJobGraph(String outputPath) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.enableCheckpointing(500, CheckpointingMode.EXACTLY_ONCE);
 
-		StreamingFileSink<Integer> sink = StreamingFileSink
-				.forRowFormat(new Path(outputPath), new IntegerFileSinkTestDataUtils.IntEncoder())
-				.withBucketAssigner(new IntegerFileSinkTestDataUtils.ModuloBucketAssigner(NUM_BUCKETS))
-				.withRollingPolicy(OnCheckpointRollingPolicy.build())
-				.build();
+        FileSink<Integer> sink =
+                FileSink.forRowFormat(
+                                new Path(outputPath), new IntegerFileSinkTestDataUtils.IntEncoder())
+                        .withBucketAssigner(
+                                new IntegerFileSinkTestDataUtils.ModuloBucketAssigner(NUM_BUCKETS))
+                        .withRollingPolicy(OnCheckpointRollingPolicy.build())
+                        .build();
 
-		env.addSource(new StatefulSource(true, latchId))
-				.uid(SOURCE_UID)
-				.setParallelism(NUM_SOURCES)
-				.addSink(sink)
-				.setParallelism(NUM_SINKS)
-				.uid(SINK_UID);
-		return env.getStreamGraph().getJobGraph();
-	}
+        env.addSource(new StatefulSource(false, finalCheckpointLatch))
+                .uid(SOURCE_UID)
+                .setParallelism(NUM_SOURCES)
+                .sinkTo(sink)
+                .setParallelism(NUM_SINKS)
+                .uid(SINK_UID);
+        return env.getStreamGraph().getJobGraph();
+    }
 
-	private JobGraph createFileSinkJobGraph(String outputPath) {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.enableCheckpointing(500, CheckpointingMode.EXACTLY_ONCE);
+    private String executeAndTakeSavepoint(
+            MiniClusterConfiguration cfg, JobGraph jobGraph, String savepointBasePath)
+            throws Exception {
+        try (MiniCluster miniCluster = new MiniCluster(cfg)) {
+            miniCluster.start();
+            CompletableFuture<JobSubmissionResult> jobSubmissionResultFuture =
+                    miniCluster.submitJob(jobGraph);
+            JobID jobId = jobSubmissionResultFuture.get().getJobID();
 
-		FileSink<Integer> sink = FileSink
-				.forRowFormat(new Path(outputPath), new IntegerFileSinkTestDataUtils.IntEncoder())
-				.withBucketAssigner(new IntegerFileSinkTestDataUtils.ModuloBucketAssigner(NUM_BUCKETS))
-				.withRollingPolicy(OnCheckpointRollingPolicy.build())
-				.build();
+            waitForAllTaskRunning(miniCluster, jobId, false);
 
-		env.addSource(new StatefulSource(false, latchId))
-				.uid(SOURCE_UID)
-				.setParallelism(NUM_SOURCES)
-				.sinkTo(sink)
-				.setParallelism(NUM_SINKS)
-				.uid(SINK_UID);
-		return env.getStreamGraph().getJobGraph();
-	}
+            CompletableFuture<String> savepointResultFuture =
+                    miniCluster.triggerSavepoint(
+                            jobId, savepointBasePath, true, SavepointFormatType.CANONICAL);
+            return savepointResultFuture.get();
+        }
+    }
 
-	private String executeAndTakeSavepoint(
-			MiniClusterConfiguration cfg,
-			JobGraph jobGraph,
-			String savepointBasePath) throws Exception {
-		try (MiniCluster miniCluster = new MiniCluster(cfg)) {
-			miniCluster.start();
-			CompletableFuture<JobSubmissionResult> jobSubmissionResultFuture = miniCluster.submitJob(jobGraph);
-			JobID jobId = jobSubmissionResultFuture.get().getJobID();
+    private void loadSavepointAndExecute(
+            MiniClusterConfiguration cfg, JobGraph jobGraph, String savepointPath)
+            throws Exception {
+        jobGraph.setSavepointRestoreSettings(
+                SavepointRestoreSettings.forPath(savepointPath, false));
 
-			// wait till we can taking savepoint
-			CountDownLatch latch = SAVEPOINT_LATCH_MAP.get(latchId);
-			latch.await();
+        try (MiniCluster miniCluster = new MiniCluster(cfg)) {
+            miniCluster.start();
+            miniCluster.executeJobBlocking(jobGraph);
+        }
+    }
 
-			CompletableFuture<String> savepointResultFuture = miniCluster.triggerSavepoint(jobId, savepointBasePath, true);
-			return savepointResultFuture.get();
-		}
-	}
+    private static class StatefulSource extends RichParallelSourceFunction<Integer>
+            implements CheckpointedFunction, CheckpointListener {
 
-	private void loadSavepointAndExecute(
-			MiniClusterConfiguration cfg,
-			JobGraph jobGraph,
-			String savepointPath
-	) throws Exception {
-		jobGraph.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepointPath, false));
+        private final boolean takingSavepointMode;
 
-		try (MiniCluster miniCluster = new MiniCluster(cfg)) {
-			miniCluster.start();
-			miniCluster.executeJobBlocking(jobGraph);
-		}
-	}
+        private SharedReference<CountDownLatch> finalCheckpointLatch;
 
-	private static class StatefulSource extends RichParallelSourceFunction<Integer> implements
-			CheckpointedFunction, CheckpointListener {
+        private ListState<Integer> nextValueState;
 
-		private final boolean takingSavepointMode;
+        private int nextValue;
 
-		private final String latchId;
+        private volatile boolean snapshottedAfterAllRecordsOutput;
 
-		private ListState<Integer> nextValueState;
+        private volatile boolean isWaitingCheckpointComplete;
 
-		private int nextValue;
+        private volatile boolean isCanceled;
 
-		private volatile boolean snapshottedAfterAllRecordsOutput;
+        public StatefulSource(
+                boolean takingSavepointMode, SharedReference<CountDownLatch> finalCheckpointLatch) {
+            this.takingSavepointMode = takingSavepointMode;
+            this.finalCheckpointLatch = finalCheckpointLatch;
+        }
 
-		private volatile boolean isWaitingCheckpointComplete;
+        @Override
+        public void initializeState(FunctionInitializationContext context) throws Exception {
+            nextValueState =
+                    context.getOperatorStateStore()
+                            .getListState(new ListStateDescriptor<>("nextValue", Integer.class));
 
-		private volatile boolean isCanceled;
+            if (nextValueState.get() != null && nextValueState.get().iterator().hasNext()) {
+                nextValue = nextValueState.get().iterator().next();
+            }
+        }
 
-		public StatefulSource(boolean takingSavepointMode, String latchId) {
-			this.takingSavepointMode = takingSavepointMode;
-			this.latchId = latchId;
-		}
+        @Override
+        public void run(SourceContext<Integer> ctx) throws Exception {
+            if (takingSavepointMode) {
+                sendRecordsUntil(NUM_RECORDS / 3, 0, ctx);
+                sendRecordsUntil(NUM_RECORDS / 2, 100, ctx);
 
-		@Override
-		public void initializeState(FunctionInitializationContext context) throws Exception {
-			nextValueState = context.getOperatorStateStore().getListState(
-					new ListStateDescriptor<>("nextValue", Integer.class));
+                while (true) {
+                    Thread.sleep(5000);
+                }
+            } else {
+                sendRecordsUntil(NUM_RECORDS, 0, ctx);
 
-			if (nextValueState.get() != null && nextValueState.get().iterator().hasNext()) {
-				nextValue = nextValueState.get().iterator().next();
-			}
-		}
+                // Wait the last checkpoint to commit all the pending records.
+                isWaitingCheckpointComplete = true;
+                finalCheckpointLatch.get().await();
+            }
+        }
 
-		@Override
-		public void run(SourceContext<Integer> ctx) throws Exception {
-			if (takingSavepointMode) {
-				sendRecordsUntil(NUM_RECORDS / 3, 0, ctx);
+        private void sendRecordsUntil(
+                int targetNumber, int sleepInMillis, SourceContext<Integer> ctx)
+                throws InterruptedException {
+            while (!isCanceled && nextValue < targetNumber) {
+                synchronized (ctx.getCheckpointLock()) {
+                    ctx.collect(nextValue++);
+                }
 
-				CountDownLatch latch = SAVEPOINT_LATCH_MAP.get(latchId);
-				latch.countDown();
+                if (sleepInMillis > 0) {
+                    Thread.sleep(sleepInMillis);
+                }
+            }
+        }
 
-				sendRecordsUntil(NUM_RECORDS / 2, 100, ctx);
+        @Override
+        public void snapshotState(FunctionSnapshotContext context) throws Exception {
+            nextValueState.update(Collections.singletonList(nextValue));
 
-				while (true) {
-					Thread.sleep(5000);
-				}
-			} else {
-				sendRecordsUntil(NUM_RECORDS, 0, ctx);
+            if (isWaitingCheckpointComplete) {
+                snapshottedAfterAllRecordsOutput = true;
+            }
+        }
 
-				// Wait the last checkpoint to commit all the pending records.
-				isWaitingCheckpointComplete = true;
-				CountDownLatch latch = FINAL_CHECKPOINT_LATCH_MAP.get(latchId);
-				latch.await();
-			}
-		}
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) throws Exception {
+            if (isWaitingCheckpointComplete && snapshottedAfterAllRecordsOutput) {
+                finalCheckpointLatch.get().countDown();
+            }
+        }
 
-		private void sendRecordsUntil(int targetNumber, int sleepInMillis, SourceContext<Integer> ctx)
-				throws InterruptedException {
-			while (!isCanceled && nextValue < targetNumber) {
-				synchronized (ctx.getCheckpointLock()) {
-					ctx.collect(nextValue++);
-				}
-
-				if (sleepInMillis > 0) {
-					Thread.sleep(sleepInMillis);
-				}
-			}
-		}
-
-		@Override
-		public void snapshotState(FunctionSnapshotContext context) throws Exception {
-			nextValueState.update(Collections.singletonList(nextValue));
-
-			if (isWaitingCheckpointComplete) {
-				snapshottedAfterAllRecordsOutput = true;
-			}
-		}
-
-		@Override
-		public void notifyCheckpointComplete(long checkpointId) throws Exception {
-			if (isWaitingCheckpointComplete && snapshottedAfterAllRecordsOutput) {
-				CountDownLatch latch = FINAL_CHECKPOINT_LATCH_MAP.get(latchId);
-				latch.countDown();
-			}
-		}
-
-		@Override
-		public void cancel() {
-			isCanceled = true;
-		}
-
-	}
+        @Override
+        public void cancel() {
+            isCanceled = true;
+        }
+    }
 }

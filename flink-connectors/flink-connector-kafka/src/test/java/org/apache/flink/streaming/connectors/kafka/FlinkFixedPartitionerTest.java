@@ -20,90 +20,90 @@ package org.apache.flink.streaming.connectors.kafka;
 
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkFixedPartitioner;
 
-import org.junit.Assert;
 import org.junit.Test;
 
-/**
- * Tests for the {@link FlinkFixedPartitioner}.
- */
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Tests for the {@link FlinkFixedPartitioner}. */
 public class FlinkFixedPartitionerTest {
 
-	/**
-	 * Test for when there are more sinks than partitions.
-	 * <pre>
-	 *   		Flink Sinks:		Kafka Partitions
-	 * 			1	---------------->	1
-	 * 			2   --------------/
-	 * 			3   -------------/
-	 * 			4	------------/
-	 * </pre>
-	 */
-	@Test
-	public void testMoreFlinkThanBrokers() {
-		FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
+    /**
+     * Test for when there are more sinks than partitions.
+     *
+     * <pre>
+     *   		Flink Sinks:		Kafka Partitions
+     * 			1	---------------->	1
+     * 			2   --------------/
+     * 			3   -------------/
+     * 			4	------------/
+     * </pre>
+     */
+    @Test
+    public void testMoreFlinkThanBrokers() {
+        FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
 
-		int[] partitions = new int[]{0};
+        int[] partitions = new int[] {0};
 
-		part.open(0, 4);
-		Assert.assertEquals(0, part.partition("abc1", null, null, null, partitions));
+        part.open(0, 4);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(0);
 
-		part.open(1, 4);
-		Assert.assertEquals(0, part.partition("abc2", null, null, null, partitions));
+        part.open(1, 4);
+        assertThat(part.partition("abc2", null, null, null, partitions)).isEqualTo(0);
 
-		part.open(2, 4);
-		Assert.assertEquals(0, part.partition("abc3", null, null, null, partitions));
-		Assert.assertEquals(0, part.partition("abc3", null, null, null, partitions)); // check if it is changing ;)
+        part.open(2, 4);
+        assertThat(part.partition("abc3", null, null, null, partitions)).isEqualTo(0);
+        assertThat(part.partition("abc3", null, null, null, partitions))
+                .isEqualTo(0); // check if it is changing ;)
 
-		part.open(3, 4);
-		Assert.assertEquals(0, part.partition("abc4", null, null, null, partitions));
-	}
+        part.open(3, 4);
+        assertThat(part.partition("abc4", null, null, null, partitions)).isEqualTo(0);
+    }
 
-	/**
-	 * Tests for when there are more partitions than sinks.
-	 * <pre>
-	 * 		Flink Sinks:		Kafka Partitions
-	 * 			1	---------------->	1
-	 * 			2	---------------->	2
-	 * 									3
-	 * 									4
-	 * 									5
-	 *
-	 * </pre>
-	 */
-	@Test
-	public void testFewerPartitions() {
-		FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
+    /**
+     * Tests for when there are more partitions than sinks.
+     *
+     * <pre>
+     * 		Flink Sinks:		Kafka Partitions
+     * 			1	---------------->	1
+     * 			2	---------------->	2
+     * 									3
+     * 									4
+     * 									5
+     *
+     * </pre>
+     */
+    @Test
+    public void testFewerPartitions() {
+        FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
 
-		int[] partitions = new int[]{0, 1, 2, 3, 4};
-		part.open(0, 2);
-		Assert.assertEquals(0, part.partition("abc1", null, null, null, partitions));
-		Assert.assertEquals(0, part.partition("abc1", null, null, null, partitions));
+        int[] partitions = new int[] {0, 1, 2, 3, 4};
+        part.open(0, 2);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(0);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(0);
 
-		part.open(1, 2);
-		Assert.assertEquals(1, part.partition("abc1", null, null, null, partitions));
-		Assert.assertEquals(1, part.partition("abc1", null, null, null, partitions));
-	}
+        part.open(1, 2);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(1);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(1);
+    }
 
-	/*
-	 * 		Flink Sinks:		Kafka Partitions
-	 * 			1	------------>--->	1
-	 * 			2	-----------/----> 	2
-	 * 			3	----------/
-	 */
-	@Test
-	public void testMixedCase() {
-		FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
-		int[] partitions = new int[]{0, 1};
+    /*
+     * 		Flink Sinks:		Kafka Partitions
+     * 			1	------------>--->	1
+     * 			2	-----------/----> 	2
+     * 			3	----------/
+     */
+    @Test
+    public void testMixedCase() {
+        FlinkFixedPartitioner<String> part = new FlinkFixedPartitioner<>();
+        int[] partitions = new int[] {0, 1};
 
-		part.open(0, 3);
-		Assert.assertEquals(0, part.partition("abc1", null, null, null, partitions));
+        part.open(0, 3);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(0);
 
-		part.open(1, 3);
-		Assert.assertEquals(1, part.partition("abc1", null, null, null, partitions));
+        part.open(1, 3);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(1);
 
-		part.open(2, 3);
-		Assert.assertEquals(0, part.partition("abc1", null, null, null, partitions));
-
-	}
-
+        part.open(2, 3);
+        assertThat(part.partition("abc1", null, null, null, partitions)).isEqualTo(0);
+    }
 }

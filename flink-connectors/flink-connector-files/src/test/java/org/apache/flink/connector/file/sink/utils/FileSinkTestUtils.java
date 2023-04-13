@@ -19,6 +19,7 @@
 package org.apache.flink.connector.file.sink.utils;
 
 import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -30,78 +31,158 @@ import java.util.function.Supplier;
 
 import static org.apache.flink.util.Preconditions.checkState;
 
-/**
- * Utils for tests related to {@link FileSink}.
- */
+/** Utils for tests related to {@link FileSink}. */
 public class FileSinkTestUtils {
-	/**
-	 * A type of testing {@link InProgressFileWriter.PendingFileRecoverable}.
-	 */
-	public static class TestPendingFileRecoverable
-			extends StringValue
-			implements InProgressFileWriter.PendingFileRecoverable {
-		// Nope
-	}
+    /** A type of testing {@link InProgressFileWriter.PendingFileRecoverable}. */
+    public static class TestPendingFileRecoverable extends StringValue
+            implements InProgressFileWriter.PendingFileRecoverable {
+        private Path path;
+        private Path uncommittedPath;
+        private long size;
 
-	/**
-	 * A type of testing {@link InProgressFileWriter.InProgressFileRecoverable}.
-	 */
-	public static class TestInProgressFileRecoverable
-			extends StringValue
-			implements InProgressFileWriter.InProgressFileRecoverable {
-		// Nope
-	}
+        public TestPendingFileRecoverable() {
+            this.path = null;
+            this.uncommittedPath = null;
+            this.size = -1L;
+        }
 
-	/**
-	 * The test serializer for the {@link TestPendingFileRecoverable} and {@link TestInProgressFileRecoverable}.
-	 */
-	public static class SimpleVersionedWrapperSerializer<T>
-			implements SimpleVersionedSerializer<T> {
+        public TestPendingFileRecoverable(Path path, long size) {
+            this.path = path;
+            this.uncommittedPath = new Path(path.getParent(), "." + path.getName());
+            this.size = size;
+        }
 
-		private final Supplier<T> factory;
+        @Override
+        public Path getPath() {
+            return path;
+        }
 
-		public SimpleVersionedWrapperSerializer(Supplier<T> factory) {
-			this.factory = factory;
-		}
+        public Path getUncommittedPath() {
+            return uncommittedPath;
+        }
 
-		@Override
-		public int getVersion() {
-			return 1;
-		}
+        @Override
+        public long getSize() {
+            return size;
+        }
 
-		@Override
-		public byte[] serialize(T obj) throws IOException {
-			checkState(obj instanceof StringValue, "Only subclass of StringValue is supported");
-			return SimpleVersionedStringSerializer.INSTANCE.serialize(((StringValue) obj).getValue());
-		}
+        @Override
+        public String getValue() {
+            return size + "," + (path == null ? "" : path.toUri().toString());
+        }
 
-		@Override
-		public T deserialize(int version, byte[] serialized) throws IOException {
-			String value = SimpleVersionedStringSerializer.INSTANCE.deserialize(
-					SimpleVersionedStringSerializer.INSTANCE.getVersion(),
-					serialized);
-			T t = factory.get();
-			checkState(t instanceof StringValue, "Only subclass of StringValue is supported");
-			((StringValue) t).setValue(value);
-			return t;
-		}
-	}
+        @Override
+        public void setValue(CharSequence value, int offset, int len) {
+            String[] arr = value.subSequence(offset, len).toString().split(",");
+            size = Integer.parseInt(arr[0]);
+            path = arr.length == 1 ? null : new Path(arr[1]);
+            if (path != null) {
+                uncommittedPath = new Path(path.getParent(), "." + path.getName());
+            }
+        }
+    }
 
-	/**
-	 * A simple {@link BucketAssigner} that accepts {@code String}'s
-	 * and returns the element itself as the bucket id.
-	 */
-	public static class StringIdentityBucketAssigner implements BucketAssigner<String, String> {
-		private static final long serialVersionUID = 1L;
+    /** A type of testing {@link InProgressFileWriter.InProgressFileRecoverable}. */
+    public static class TestInProgressFileRecoverable extends StringValue
+            implements InProgressFileWriter.InProgressFileRecoverable {
+        private Path path;
+        private Path uncommittedPath;
+        private long size;
 
-		@Override
-		public String getBucketId(String element, BucketAssigner.Context context) {
-			return element;
-		}
+        public TestInProgressFileRecoverable() {
+            this.path = null;
+            this.uncommittedPath = null;
+            this.size = -1L;
+        }
 
-		@Override
-		public SimpleVersionedSerializer<String> getSerializer() {
-			return SimpleVersionedStringSerializer.INSTANCE;
-		}
-	}
+        public TestInProgressFileRecoverable(Path path, long size) {
+            this.path = path;
+            this.uncommittedPath = new Path(path.getParent(), "." + path.getName());
+            this.size = size;
+        }
+
+        @Override
+        public Path getPath() {
+            return path;
+        }
+
+        public Path getUncommittedPath() {
+            return uncommittedPath;
+        }
+
+        @Override
+        public long getSize() {
+            return size;
+        }
+
+        @Override
+        public String getValue() {
+            return size + "," + (path == null ? "" : path.toUri().toString());
+        }
+
+        @Override
+        public void setValue(CharSequence value, int offset, int len) {
+            String[] arr = value.subSequence(offset, len).toString().split(",");
+            size = Integer.parseInt(arr[0]);
+            path = arr.length == 1 ? null : new Path(arr[1]);
+            if (path != null) {
+                uncommittedPath = new Path(path.getParent(), "." + path.getName());
+            }
+        }
+    }
+
+    /**
+     * The test serializer for the {@link TestPendingFileRecoverable} and {@link
+     * TestInProgressFileRecoverable}.
+     */
+    public static class SimpleVersionedWrapperSerializer<T>
+            implements SimpleVersionedSerializer<T> {
+
+        private final Supplier<T> factory;
+
+        public SimpleVersionedWrapperSerializer(Supplier<T> factory) {
+            this.factory = factory;
+        }
+
+        @Override
+        public int getVersion() {
+            return 1;
+        }
+
+        @Override
+        public byte[] serialize(T obj) throws IOException {
+            checkState(obj instanceof StringValue, "Only subclass of StringValue is supported");
+            return SimpleVersionedStringSerializer.INSTANCE.serialize(
+                    ((StringValue) obj).getValue());
+        }
+
+        @Override
+        public T deserialize(int version, byte[] serialized) throws IOException {
+            String value =
+                    SimpleVersionedStringSerializer.INSTANCE.deserialize(
+                            SimpleVersionedStringSerializer.INSTANCE.getVersion(), serialized);
+            T t = factory.get();
+            checkState(t instanceof StringValue, "Only subclass of StringValue is supported");
+            ((StringValue) t).setValue(value);
+            return t;
+        }
+    }
+
+    /**
+     * A simple {@link BucketAssigner} that accepts {@code String}'s and returns the element itself
+     * as the bucket id.
+     */
+    public static class StringIdentityBucketAssigner implements BucketAssigner<String, String> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String getBucketId(String element, BucketAssigner.Context context) {
+            return element;
+        }
+
+        @Override
+        public SimpleVersionedSerializer<String> getSerializer() {
+            return SimpleVersionedStringSerializer.INSTANCE;
+        }
+    }
 }

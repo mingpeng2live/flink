@@ -20,157 +20,155 @@ package org.apache.flink.connector.hbase.util;
 
 import org.apache.flink.core.testutils.CommonTestUtils;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests that validate the loading of the HBase configuration, relative to
- * entries in the Flink configuration and the environment variables.
+ * Tests that validate the loading of the HBase configuration, relative to entries in the Flink
+ * configuration and the environment variables.
  */
-public class HBaseConfigLoadingTest {
+class HBaseConfigLoadingTest {
 
-	private static final String IN_HBASE_CONFIG_KEY = "hbase_conf_key";
-	private static final String IN_HBASE_CONFIG_VALUE = "hbase_conf_value!";
+    private static final String IN_HBASE_CONFIG_KEY = "hbase_conf_key";
+    private static final String IN_HBASE_CONFIG_VALUE = "hbase_conf_value!";
 
-	@Rule
-	public final TemporaryFolder tempFolder = new TemporaryFolder();
+    @TempDir Path tmpDir;
 
-	@Test
-	public void loadFromClasspathByDefault() {
-		org.apache.hadoop.conf.Configuration hbaseConf =
-			HBaseConfigurationUtil.getHBaseConfiguration();
+    @Test
+    void loadFromClasspathByDefault() {
+        org.apache.hadoop.conf.Configuration hbaseConf =
+                HBaseConfigurationUtil.getHBaseConfiguration();
 
-		assertEquals(IN_HBASE_CONFIG_VALUE, hbaseConf.get(IN_HBASE_CONFIG_KEY, null));
-	}
+        assertThat(hbaseConf.get(IN_HBASE_CONFIG_KEY, null)).isEqualTo(IN_HBASE_CONFIG_VALUE);
+    }
 
-	@Test
-	public void loadFromEnvVariables() throws Exception {
-		final String k1 = "where?";
-		final String v1 = "I'm on a boat";
-		final String k2 = "when?";
-		final String v2 = "midnight";
-		final String k3 = "why?";
-		final String v3 = "what do you think?";
-		final String k4 = "which way?";
-		final String v4 = "south, always south...";
+    @Test
+    void loadFromEnvVariables() throws Exception {
+        final String k1 = "where?";
+        final String v1 = "I'm on a boat";
+        final String k2 = "when?";
+        final String v2 = "midnight";
+        final String k3 = "why?";
+        final String v3 = "what do you think?";
+        final String k4 = "which way?";
+        final String v4 = "south, always south...";
 
-		final File hbaseConfDir = tempFolder.newFolder();
+        final File hbaseConfDir = tmpDir.toFile();
 
-		final File hbaseHome = tempFolder.newFolder();
+        final File hbaseHome = Files.createTempDirectory(tmpDir, "junit_hbaseHome_").toFile();
 
-		final File hbaseHomeConf = new File(hbaseHome, "conf");
+        final File hbaseHomeConf = new File(hbaseHome, "conf");
 
-		assertTrue(hbaseHomeConf.mkdirs());
+        assertThat(hbaseHomeConf.mkdirs()).isTrue();
 
-		final File file1 = new File(hbaseConfDir, "hbase-default.xml");
-		final File file2 = new File(hbaseConfDir, "hbase-site.xml");
-		final File file3 = new File(hbaseHomeConf, "hbase-default.xml");
-		final File file4 = new File(hbaseHomeConf, "hbase-site.xml");
+        final File file1 = new File(hbaseConfDir, "hbase-default.xml");
+        final File file2 = new File(hbaseConfDir, "hbase-site.xml");
+        final File file3 = new File(hbaseHomeConf, "hbase-default.xml");
+        final File file4 = new File(hbaseHomeConf, "hbase-site.xml");
 
-		printConfig(file1, k1, v1);
-		printConfig(file2, k2, v2);
-		printConfig(file3, k3, v3);
-		printConfig(file4, k4, v4);
+        printConfig(file1, k1, v1);
+        printConfig(file2, k2, v2);
+        printConfig(file3, k3, v3);
+        printConfig(file4, k4, v4);
 
-		final org.apache.hadoop.conf.Configuration hbaseConf;
+        final org.apache.hadoop.conf.Configuration hbaseConf;
 
-		final Map<String, String> originalEnv = System.getenv();
-		final Map<String, String> newEnv = new HashMap<>(originalEnv);
-		newEnv.put("HBASE_CONF_DIR", hbaseConfDir.getAbsolutePath());
-		newEnv.put("HBASE_HOME", hbaseHome.getAbsolutePath());
-		try {
-			CommonTestUtils.setEnv(newEnv);
-			hbaseConf = HBaseConfigurationUtil.getHBaseConfiguration();
-		}
-		finally {
-			CommonTestUtils.setEnv(originalEnv);
-		}
+        final Map<String, String> originalEnv = System.getenv();
+        final Map<String, String> newEnv = new HashMap<>(originalEnv);
+        newEnv.put("HBASE_CONF_DIR", hbaseConfDir.getAbsolutePath());
+        newEnv.put("HBASE_HOME", hbaseHome.getAbsolutePath());
+        try {
+            CommonTestUtils.setEnv(newEnv);
+            hbaseConf = HBaseConfigurationUtil.getHBaseConfiguration();
+        } finally {
+            CommonTestUtils.setEnv(originalEnv);
+        }
 
-		// contains extra entries
-		assertEquals(v1, hbaseConf.get(k1, null));
-		assertEquals(v2, hbaseConf.get(k2, null));
-		assertEquals(v3, hbaseConf.get(k3, null));
-		assertEquals(v4, hbaseConf.get(k4, null));
+        // contains extra entries
+        assertThat(hbaseConf.get(k1, null)).isEqualTo(v1);
+        assertThat(hbaseConf.get(k2, null)).isEqualTo(v2);
+        assertThat(hbaseConf.get(k3, null)).isEqualTo(v3);
+        assertThat(hbaseConf.get(k4, null)).isEqualTo(v4);
 
-		// also contains classpath defaults
-		assertEquals(IN_HBASE_CONFIG_VALUE, hbaseConf.get(IN_HBASE_CONFIG_KEY, null));
-	}
+        // also contains classpath defaults
+        assertThat(hbaseConf.get(IN_HBASE_CONFIG_KEY, null)).isEqualTo(IN_HBASE_CONFIG_VALUE);
+    }
 
-	@Test
-	public void loadOverlappingConfig() throws Exception {
-		final String k1 = "key1";
+    @Test
+    void loadOverlappingConfig() throws Exception {
+        final String k1 = "key1";
 
-		final String v1 = "from HBASE_HOME/conf";
-		final String v2 = "from HBASE_CONF_DIR";
+        final String v1 = "from HBASE_HOME/conf";
+        final String v2 = "from HBASE_CONF_DIR";
 
-		final File hbaseHome = tempFolder.newFolder("hbaseHome");
-		final File hbaseHomeConf = new File(hbaseHome, "conf");
+        final File hbaseHome = tmpDir.resolve("hbaseHome").toFile();
+        final File hbaseHomeConf = new File(hbaseHome, "conf");
 
-		final File hbaseConfDir = tempFolder.newFolder("hbaseConfDir");
+        final File hbaseConfDir = tmpDir.resolve("hbaseConfDir").toFile();
 
-		assertTrue(hbaseHomeConf.mkdirs());
-		final File file1 = new File(hbaseHomeConf, "hbase-site.xml");
+        assertThat(hbaseHomeConf.mkdirs()).isTrue();
+        final File file1 = new File(hbaseHomeConf, "hbase-site.xml");
 
-		Map<String, String> properties1 = new HashMap<>();
-		properties1.put(k1, v1);
-		printConfigs(file1, properties1);
+        Map<String, String> properties1 = new HashMap<>();
+        properties1.put(k1, v1);
+        printConfigs(file1, properties1);
 
-		// HBASE_CONF_DIR conf will override k1 with v2
-		final File file2 = new File(hbaseConfDir, "hbase-site.xml");
-		Map<String, String> properties2 = new HashMap<>();
-		properties2.put(k1, v2);
-		printConfigs(file2, properties2);
+        // HBASE_CONF_DIR conf will override k1 with v2
+        assertThat(hbaseConfDir.mkdirs()).isTrue();
+        final File file2 = new File(hbaseConfDir, "hbase-site.xml");
+        Map<String, String> properties2 = new HashMap<>();
+        properties2.put(k1, v2);
+        printConfigs(file2, properties2);
 
-		final org.apache.hadoop.conf.Configuration hbaseConf;
+        final org.apache.hadoop.conf.Configuration hbaseConf;
 
-		final Map<String, String> originalEnv = System.getenv();
-		final Map<String, String> newEnv = new HashMap<>(originalEnv);
-		newEnv.put("HBASE_CONF_DIR", hbaseConfDir.getAbsolutePath());
-		newEnv.put("HBASE_HOME", hbaseHome.getAbsolutePath());
-		try {
-			CommonTestUtils.setEnv(newEnv);
-			hbaseConf = HBaseConfigurationUtil.getHBaseConfiguration();
-		}
-		finally {
-			CommonTestUtils.setEnv(originalEnv);
-		}
+        final Map<String, String> originalEnv = System.getenv();
+        final Map<String, String> newEnv = new HashMap<>(originalEnv);
+        newEnv.put("HBASE_CONF_DIR", hbaseConfDir.getAbsolutePath());
+        newEnv.put("HBASE_HOME", hbaseHome.getAbsolutePath());
+        try {
+            CommonTestUtils.setEnv(newEnv);
+            hbaseConf = HBaseConfigurationUtil.getHBaseConfiguration();
+        } finally {
+            CommonTestUtils.setEnv(originalEnv);
+        }
 
-		// contains extra entries
-		assertEquals(v2, hbaseConf.get(k1, null));
+        // contains extra entries
+        assertThat(hbaseConf.get(k1, null)).isEqualTo(v2);
 
-		// also contains classpath defaults
-		assertEquals(IN_HBASE_CONFIG_VALUE, hbaseConf.get(IN_HBASE_CONFIG_KEY, null));
-	}
+        // also contains classpath defaults
+        assertThat(hbaseConf.get(IN_HBASE_CONFIG_KEY, null)).isEqualTo(IN_HBASE_CONFIG_VALUE);
+    }
 
-	private static void printConfig(File file, String key, String value) throws IOException {
-		Map<String, String> map = new HashMap<>(1);
-		map.put(key, value);
-		printConfigs(file, map);
-	}
+    private static void printConfig(File file, String key, String value) throws IOException {
+        Map<String, String> map = new HashMap<>(1);
+        map.put(key, value);
+        printConfigs(file, map);
+    }
 
-	private static void printConfigs(File file, Map<String, String> properties) throws IOException {
-		try (PrintStream out = new PrintStream(new FileOutputStream(file))) {
-			out.println("<?xml version=\"1.0\"?>");
-			out.println("<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>");
-			out.println("<configuration>");
-			for (Map.Entry<String, String> entry: properties.entrySet()) {
-				out.println("\t<property>");
-				out.println("\t\t<name>" + entry.getKey() + "</name>");
-				out.println("\t\t<value>" + entry.getValue() + "</value>");
-				out.println("\t</property>");
-			}
-			out.println("</configuration>");
-		}
-	}
+    private static void printConfigs(File file, Map<String, String> properties) throws IOException {
+        try (PrintStream out = new PrintStream(new FileOutputStream(file))) {
+            out.println("<?xml version=\"1.0\"?>");
+            out.println("<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>");
+            out.println("<configuration>");
+            for (Map.Entry<String, String> entry : properties.entrySet()) {
+                out.println("\t<property>");
+                out.println("\t\t<name>" + entry.getKey() + "</name>");
+                out.println("\t\t<value>" + entry.getValue() + "</value>");
+                out.println("\t</property>");
+            }
+            out.println("</configuration>");
+        }
+    }
 }

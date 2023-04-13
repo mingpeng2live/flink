@@ -18,38 +18,120 @@
 
 package org.apache.flink.runtime.state;
 
+import org.apache.flink.api.java.tuple.Tuple2;
+
 import org.junit.Test;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+import static org.apache.flink.runtime.state.StateUtil.discardStateFuture;
+import static org.apache.flink.util.concurrent.FutureUtils.completedExceptionally;
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
-/**
- * Tests for {@link StateUtil}.
- */
+/** Tests for {@link StateUtil}. */
 public class StateUtilTest {
 
-	@Test
-	public void unexpectedStateExceptionForSingleExpectedType() {
-		Exception exception = StateUtil.unexpectedStateHandleException(
-				KeyGroupsStateHandle.class,
-				KeyGroupsStateHandle.class);
+    @Test
+    public void testDiscardStateSize() throws Exception {
+        assertEquals(
+                Tuple2.of(1234L, 123L),
+                discardStateFuture(completedFuture(new TestStateObject(1234, 123))));
+        Tuple2<Long, Long> zeroSize = Tuple2.of(0L, 0L);
+        assertEquals(zeroSize, discardStateFuture(null));
+        assertEquals(zeroSize, discardStateFuture(new CompletableFuture<>()));
+        assertEquals(zeroSize, discardStateFuture(completedExceptionally(new RuntimeException())));
+        assertEquals(zeroSize, discardStateFuture(emptyFuture(false, true)));
+        assertEquals(zeroSize, discardStateFuture(emptyFuture(false, false)));
+        assertEquals(zeroSize, discardStateFuture(emptyFuture(true, true)));
+        assertEquals(zeroSize, discardStateFuture(emptyFuture(true, false)));
+    }
 
-		assertThat(
-				exception.getMessage(),
-				containsString(
-						"Unexpected state handle type, expected one of: class org.apache.flink.runtime.state.KeyGroupsStateHandle, but found: class org.apache.flink.runtime.state.KeyGroupsStateHandle. This can mostly happen when a different StateBackend from the one that was used for taking a checkpoint/savepoint is used when restoring."));
-	}
+    @Test
+    public void unexpectedStateExceptionForSingleExpectedType() {
+        Exception exception =
+                StateUtil.unexpectedStateHandleException(
+                        KeyGroupsStateHandle.class, KeyGroupsStateHandle.class);
 
-	@Test
-	@SuppressWarnings("unchecked")
-	public void unexpectedStateExceptionForMultipleExpectedTypes() {
-		Exception exception = StateUtil.unexpectedStateHandleException(
-				new Class[]{KeyGroupsStateHandle.class, KeyGroupsStateHandle.class},
-				KeyGroupsStateHandle.class);
+        assertThat(
+                exception.getMessage(),
+                containsString(
+                        "Unexpected state handle type, expected one of: class org.apache.flink.runtime.state.KeyGroupsStateHandle, but found: class org.apache.flink.runtime.state.KeyGroupsStateHandle. This can mostly happen when a different StateBackend from the one that was used for taking a checkpoint/savepoint is used when restoring."));
+    }
 
-		assertThat(
-				exception.getMessage(),
-				containsString(
-						"Unexpected state handle type, expected one of: class org.apache.flink.runtime.state.KeyGroupsStateHandle, class org.apache.flink.runtime.state.KeyGroupsStateHandle, but found: class org.apache.flink.runtime.state.KeyGroupsStateHandle. This can mostly happen when a different StateBackend from the one that was used for taking a checkpoint/savepoint is used when restoring."));
-	}
+    @Test
+    @SuppressWarnings("unchecked")
+    public void unexpectedStateExceptionForMultipleExpectedTypes() {
+        Exception exception =
+                StateUtil.unexpectedStateHandleException(
+                        new Class[] {KeyGroupsStateHandle.class, KeyGroupsStateHandle.class},
+                        KeyGroupsStateHandle.class);
+
+        assertThat(
+                exception.getMessage(),
+                containsString(
+                        "Unexpected state handle type, expected one of: class org.apache.flink.runtime.state.KeyGroupsStateHandle, class org.apache.flink.runtime.state.KeyGroupsStateHandle, but found: class org.apache.flink.runtime.state.KeyGroupsStateHandle. This can mostly happen when a different StateBackend from the one that was used for taking a checkpoint/savepoint is used when restoring."));
+    }
+
+    private static <T> Future<T> emptyFuture(boolean done, boolean canBeCancelled) {
+        return new Future<T>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return canBeCancelled;
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public boolean isDone() {
+                return done;
+            }
+
+            @Override
+            public T get() {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public T get(long timeout, TimeUnit unit) {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    private static class TestStateObject implements CompositeStateHandle {
+        private static final long serialVersionUID = -8070326169926626355L;
+        private final int size;
+        private final int checkpointedSize;
+
+        private TestStateObject(int size, int checkpointedSize) {
+            this.size = size;
+            this.checkpointedSize = checkpointedSize;
+        }
+
+        @Override
+        public long getStateSize() {
+            return size;
+        }
+
+        @Override
+        public void discardState() {}
+
+        @Override
+        public long getCheckpointedSize() {
+            return checkpointedSize;
+        }
+
+        @Override
+        public void registerSharedStates(SharedStateRegistry stateRegistry, long checkpointID) {
+            throw new UnsupportedOperationException();
+        }
+    }
 }

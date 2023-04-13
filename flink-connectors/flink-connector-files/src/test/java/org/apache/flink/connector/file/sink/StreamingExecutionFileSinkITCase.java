@@ -31,14 +31,13 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.util.Collections;
 import java.util.Map;
@@ -46,165 +45,172 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 
-/**
- * Tests the functionality of the {@link FileSink} in STREAMING mode.
- */
-@RunWith(Parameterized.class)
-public class StreamingExecutionFileSinkITCase extends FileSinkITBase {
+/** Tests the functionality of the {@link FileSink} in STREAMING mode. */
+class StreamingExecutionFileSinkITCase extends FileSinkITBase {
 
-	private static final Map<String, CountDownLatch> LATCH_MAP = new ConcurrentHashMap<>();
+    private static final Map<String, CountDownLatch> LATCH_MAP = new ConcurrentHashMap<>();
 
-	private String latchId;
+    private String latchId;
 
-	@Before
-	public void setup() {
-		this.latchId = UUID.randomUUID().toString();
-		// We wait for two successful checkpoints in sources before shutting down. This ensures that
-		// the sink can commit its data.
-		// We need to keep a "static" latch here because all sources need to be kept running
-		// while we're waiting for the required number of checkpoints. Otherwise, we would lock up
-		// because we can only do checkpoints while all operators are running.
-		LATCH_MAP.put(latchId, new CountDownLatch(NUM_SOURCES * 2));
-	}
+    @BeforeEach
+    void setup() {
+        this.latchId = UUID.randomUUID().toString();
+        // We wait for two successful checkpoints in sources before shutting down. This ensures that
+        // the sink can commit its data.
+        // We need to keep a "static" latch here because all sources need to be kept running
+        // while we're waiting for the required number of checkpoints. Otherwise, we would lock up
+        // because we can only do checkpoints while all operators are running.
+        LATCH_MAP.put(latchId, new CountDownLatch(NUM_SOURCES * 2));
+    }
 
-	@After
-	public void teardown() {
-		LATCH_MAP.remove(latchId);
-	}
+    @AfterEach
+    void teardown() {
+        LATCH_MAP.remove(latchId);
+    }
 
-	/**
-	 * Creating the testing job graph in streaming mode. The graph created is
-	 * [Source] -> [File Sink]. The source would trigger failover if required.
-	 */
-	@Override
-	protected JobGraph createJobGraph(String path) {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		Configuration config = new Configuration();
-		config.set(ExecutionOptions.RUNTIME_MODE, RuntimeExecutionMode.STREAMING);
-		env.configure(config, getClass().getClassLoader());
+    /**
+     * Creating the testing job graph in streaming mode. The graph created is [Source] -> [File
+     * Sink]. The source would trigger failover if required.
+     */
+    @Override
+    protected JobGraph createJobGraph(boolean triggerFailover, String path) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        Configuration config = new Configuration();
+        config.set(ExecutionOptions.RUNTIME_MODE, RuntimeExecutionMode.STREAMING);
+        env.configure(config, getClass().getClassLoader());
 
-		env.enableCheckpointing(10, CheckpointingMode.EXACTLY_ONCE);
+        env.enableCheckpointing(10, CheckpointingMode.EXACTLY_ONCE);
 
-		if (triggerFailover) {
-			env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.milliseconds(100)));
-		} else {
-			env.setRestartStrategy(RestartStrategies.noRestart());
-		}
+        if (triggerFailover) {
+            env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.milliseconds(100)));
+        } else {
+            env.setRestartStrategy(RestartStrategies.noRestart());
+        }
 
-		env.addSource(new StreamingExecutionTestSource(latchId, NUM_RECORDS, triggerFailover))
-				.setParallelism(NUM_SOURCES)
-				.sinkTo(createFileSink(path))
-				.setParallelism(NUM_SINKS);
+        DataStreamSink<Integer> sink =
+                env.addSource(
+                                new StreamingExecutionTestSource(
+                                        latchId, NUM_RECORDS, triggerFailover))
+                        .setParallelism(NUM_SOURCES)
+                        .sinkTo(createFileSink(path))
+                        .setParallelism(NUM_SINKS);
+        configureSink(sink);
 
-		StreamGraph streamGraph = env.getStreamGraph();
-		return streamGraph.getJobGraph();
-	}
+        StreamGraph streamGraph = env.getStreamGraph();
+        return streamGraph.getJobGraph();
+    }
 
-	//------------------------ Streaming mode user functions ----------------------------------
+    protected void configureSink(DataStreamSink<Integer> sink) {}
 
-	private static class StreamingExecutionTestSource extends RichParallelSourceFunction<Integer>
-			implements CheckpointListener, CheckpointedFunction {
+    // ------------------------ Streaming mode user functions ----------------------------------
 
-		private final String latchId;
+    private static class StreamingExecutionTestSource extends RichParallelSourceFunction<Integer>
+            implements CheckpointListener, CheckpointedFunction {
 
-		private final int numberOfRecords;
+        private final String latchId;
 
-		/**
-		 * Whether the test is executing in a scenario that induces a failover. This doesn't mean
-		 * that this source induces the failover.
-		 */
-		private final boolean isFailoverScenario;
+        private final int numberOfRecords;
 
-		private ListState<Integer> nextValueState;
+        /**
+         * Whether the test is executing in a scenario that induces a failover. This doesn't mean
+         * that this source induces the failover.
+         */
+        private final boolean isFailoverScenario;
 
-		private int nextValue;
+        private ListState<Integer> nextValueState;
 
-		private volatile boolean isCanceled;
+        private int nextValue;
 
-		private volatile boolean snapshottedAfterAllRecordsOutput;
+        private volatile boolean isCanceled;
 
-		private volatile boolean isWaitingCheckpointComplete;
+        private volatile boolean snapshottedAfterAllRecordsOutput;
 
-		private volatile boolean hasCompletedCheckpoint;
+        private volatile boolean isWaitingCheckpointComplete;
 
-		public StreamingExecutionTestSource(String latchId, int numberOfRecords, boolean isFailoverScenario) {
-			this.latchId = latchId;
-			this.numberOfRecords = numberOfRecords;
-			this.isFailoverScenario = isFailoverScenario;
-		}
+        private volatile boolean hasCompletedCheckpoint;
 
-		@Override
-		public void initializeState(FunctionInitializationContext context) throws Exception {
-			nextValueState = context.getOperatorStateStore().getListState(new ListStateDescriptor<>("nextValue", Integer.class));
+        public StreamingExecutionTestSource(
+                String latchId, int numberOfRecords, boolean isFailoverScenario) {
+            this.latchId = latchId;
+            this.numberOfRecords = numberOfRecords;
+            this.isFailoverScenario = isFailoverScenario;
+        }
 
-			if (nextValueState.get() != null && nextValueState.get().iterator().hasNext()) {
-				nextValue = nextValueState.get().iterator().next();
-			}
-		}
+        @Override
+        public void initializeState(FunctionInitializationContext context) throws Exception {
+            nextValueState =
+                    context.getOperatorStateStore()
+                            .getListState(new ListStateDescriptor<>("nextValue", Integer.class));
 
-		@Override
-		public void run(SourceContext<Integer> ctx) throws Exception {
-			if (isFailoverScenario && getRuntimeContext().getAttemptNumber() == 0) {
-				// In the first execution, we first send a part of record...
-				sendRecordsUntil((int) (numberOfRecords * FAILOVER_RATIO * 0.5), ctx);
+            if (nextValueState.get() != null && nextValueState.get().iterator().hasNext()) {
+                nextValue = nextValueState.get().iterator().next();
+            }
+        }
 
-				// Wait till the first part of data is committed.
-				while (!hasCompletedCheckpoint) {
-					Thread.sleep(50);
-				}
+        @Override
+        public void run(SourceContext<Integer> ctx) throws Exception {
+            if (isFailoverScenario && getRuntimeContext().getAttemptNumber() == 0) {
+                // In the first execution, we first send a part of record...
+                sendRecordsUntil((int) (numberOfRecords * FAILOVER_RATIO * 0.5), ctx);
 
-				// Then we write the second part of data...
-				sendRecordsUntil((int) (numberOfRecords * FAILOVER_RATIO), ctx);
+                // Wait till the first part of data is committed.
+                while (!hasCompletedCheckpoint) {
+                    Thread.sleep(50);
+                }
 
-				// And then trigger the failover.
-				if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
-					throw new RuntimeException("Designated Exception");
-				} else {
-					while (true) {
-						Thread.sleep(50);
-					}
-				}
-			} else {
-				// If we are not going to trigger failover or we have already triggered failover, run until finished.
-				sendRecordsUntil(numberOfRecords, ctx);
+                // Then we write the second part of data...
+                sendRecordsUntil((int) (numberOfRecords * FAILOVER_RATIO), ctx);
 
-				// Wait the last checkpoint to commit all the pending records.
-				isWaitingCheckpointComplete = true;
-				CountDownLatch latch = LATCH_MAP.get(latchId);
-				latch.await();
-			}
-		}
+                // And then trigger the failover.
+                if (getRuntimeContext().getIndexOfThisSubtask() == 0) {
+                    throw new RuntimeException("Designated Exception");
+                } else {
+                    while (true) {
+                        Thread.sleep(50);
+                    }
+                }
+            } else {
+                // If we are not going to trigger failover or we have already triggered failover,
+                // run until finished.
+                sendRecordsUntil(numberOfRecords, ctx);
 
-		private void sendRecordsUntil(int targetNumber, SourceContext<Integer> ctx) {
-			while (!isCanceled && nextValue < targetNumber) {
-				synchronized (ctx.getCheckpointLock()) {
-					ctx.collect(nextValue++);
-				}
-			}
-		}
+                // Wait the last checkpoint to commit all the pending records.
+                isWaitingCheckpointComplete = true;
+                CountDownLatch latch = LATCH_MAP.get(latchId);
+                latch.await();
+            }
+        }
 
-		@Override
-		public void snapshotState(FunctionSnapshotContext context) throws Exception {
-			nextValueState.update(Collections.singletonList(nextValue));
+        private void sendRecordsUntil(int targetNumber, SourceContext<Integer> ctx) {
+            while (!isCanceled && nextValue < targetNumber) {
+                synchronized (ctx.getCheckpointLock()) {
+                    ctx.collect(nextValue++);
+                }
+            }
+        }
 
-			if (isWaitingCheckpointComplete) {
-				snapshottedAfterAllRecordsOutput = true;
-			}
-		}
+        @Override
+        public void snapshotState(FunctionSnapshotContext context) throws Exception {
+            nextValueState.update(Collections.singletonList(nextValue));
 
-		@Override
-		public void notifyCheckpointComplete(long checkpointId) throws Exception {
-			if (isWaitingCheckpointComplete && snapshottedAfterAllRecordsOutput) {
-				CountDownLatch latch = LATCH_MAP.get(latchId);
-				latch.countDown();
-			}
+            if (isWaitingCheckpointComplete) {
+                snapshottedAfterAllRecordsOutput = true;
+            }
+        }
 
-			hasCompletedCheckpoint = true;
-		}
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) throws Exception {
+            if (isWaitingCheckpointComplete && snapshottedAfterAllRecordsOutput) {
+                CountDownLatch latch = LATCH_MAP.get(latchId);
+                latch.countDown();
+            }
 
-		@Override
-		public void cancel() {
-			isCanceled = true;
-		}
-	}
+            hasCompletedCheckpoint = true;
+        }
+
+        @Override
+        public void cancel() {
+            isCanceled = true;
+        }
+    }
 }

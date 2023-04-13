@@ -23,47 +23,57 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
 import org.apache.flink.table.functions.python.PythonAggregateFunctionInfo;
-import org.apache.flink.table.planner.typeutils.DataViewUtils;
+import org.apache.flink.table.runtime.dataview.DataViewSpec;
 import org.apache.flink.table.types.logical.RowType;
 
-/**
- * The Python TableAggregateFunction operator for the blink planner.
- */
+/** The Python TableAggregateFunction operator. */
 @Internal
-public class PythonStreamGroupTableAggregateOperator extends AbstractPythonStreamAggregateOperator {
+public class PythonStreamGroupTableAggregateOperator
+        extends AbstractPythonStreamGroupAggregateOperator {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	@VisibleForTesting
-	protected static final String STREAM_GROUP_TABLE_AGGREGATE_URN = "flink:transform:stream_group_table_aggregate:v1";
+    @VisibleForTesting
+    protected static final String STREAM_GROUP_TABLE_AGGREGATE_URN =
+            "flink:transform:stream_group_table_aggregate:v1";
 
-	public PythonStreamGroupTableAggregateOperator(
-		Configuration config,
-		RowType inputType,
-		RowType outputType,
-		PythonAggregateFunctionInfo[] aggregateFunctions,
-		DataViewUtils.DataViewSpec[][] dataViewSpecs,
-		int[] grouping,
-		int indexOfCountStar,
-		boolean generateUpdateBefore,
-		long minRetentionTime,
-		long maxRetentionTime) {
-		super(config, inputType, outputType, aggregateFunctions, dataViewSpecs, grouping,
-			indexOfCountStar, generateUpdateBefore, minRetentionTime, maxRetentionTime);
-	}
+    public PythonStreamGroupTableAggregateOperator(
+            Configuration config,
+            RowType inputType,
+            RowType outputType,
+            PythonAggregateFunctionInfo[] aggregateFunctions,
+            DataViewSpec[][] dataViewSpecs,
+            int[] grouping,
+            int indexOfCountStar,
+            boolean generateUpdateBefore,
+            long minRetentionTime,
+            long maxRetentionTime) {
+        super(
+                config,
+                inputType,
+                outputType,
+                aggregateFunctions,
+                dataViewSpecs,
+                grouping,
+                indexOfCountStar,
+                generateUpdateBefore,
+                minRetentionTime,
+                maxRetentionTime);
+    }
 
-	/**
-	 * Gets the proto representation of the Python user-defined table aggregate function to be executed.
-	 */
-	@Override
-	public FlinkFnApi.UserDefinedAggregateFunctions getUserDefinedFunctionsProto() {
-		FlinkFnApi.UserDefinedAggregateFunctions.Builder builder =
-			super.getUserDefinedFunctionsProto().toBuilder();
-		return builder.build();
-	}
+    /**
+     * Gets the proto representation of the Python user-defined table aggregate function to be
+     * executed.
+     */
+    @Override
+    public FlinkFnApi.UserDefinedAggregateFunctions getUserDefinedFunctionsProto() {
+        FlinkFnApi.UserDefinedAggregateFunctions.Builder builder =
+                super.getUserDefinedFunctionsProto().toBuilder();
+        return builder.build();
+    }
 
-	@Override
-	public String getFunctionUrn() {
-		return STREAM_GROUP_TABLE_AGGREGATE_URN;
-	}
+    @Override
+    public String getFunctionUrn() {
+        return STREAM_GROUP_TABLE_AGGREGATE_URN;
+    }
 }

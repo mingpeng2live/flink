@@ -19,35 +19,56 @@
 package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.api.connector.source.ExternallyInducedSourceReader;
-import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.streaming.api.operators.SourceOperator;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
-/**
- * A subclass of {@link StreamTaskSourceInput} for {@link ExternallyInducedSourceReader}.
- */
+/** A subclass of {@link StreamTaskSourceInput} for {@link ExternallyInducedSourceReader}. */
 public class StreamTaskExternallyInducedSourceInput<T> extends StreamTaskSourceInput<T> {
-	private final Consumer<Long> checkpointTriggeringHook;
-	private final ExternallyInducedSourceReader<T, ?> sourceReader;
+    private final Consumer<Long> checkpointTriggeringHook;
+    private final ExternallyInducedSourceReader<T, ?> sourceReader;
+    private CompletableFuture<?> blockFuture;
 
-	@SuppressWarnings("unchecked")
-	public StreamTaskExternallyInducedSourceInput(
-			SourceOperator<T, ?> operator,
-			Consumer<Long> checkpointTriggeringHook,
-			int inputGateIndex,
-			int inputIndex) {
-		super(operator, inputGateIndex, inputIndex);
-		this.checkpointTriggeringHook = checkpointTriggeringHook;
-		this.sourceReader = (ExternallyInducedSourceReader<T, ?>) operator.getSourceReader();
-	}
+    @SuppressWarnings("unchecked")
+    public StreamTaskExternallyInducedSourceInput(
+            SourceOperator<T, ?> operator,
+            Consumer<Long> checkpointTriggeringHook,
+            int inputGateIndex,
+            int inputIndex) {
+        super(operator, inputGateIndex, inputIndex);
+        this.checkpointTriggeringHook = checkpointTriggeringHook;
+        this.sourceReader = (ExternallyInducedSourceReader<T, ?>) operator.getSourceReader();
+    }
 
-	@Override
-	public InputStatus emitNext(DataOutput<T> output) throws Exception {
-		InputStatus status = super.emitNext(output);
-		if (status == InputStatus.NOTHING_AVAILABLE) {
-			sourceReader.shouldTriggerCheckpoint().ifPresent(checkpointTriggeringHook);
-		}
-		return status;
-	}
+    public void blockUntil(CompletableFuture<?> blockFuture) {
+        this.blockFuture = blockFuture;
+        // assume that the future is completed in mailbox thread
+        blockFuture.whenComplete((v, e) -> unblock());
+    }
+
+    private void unblock() {
+        this.blockFuture = null;
+    }
+
+    @Override
+    public DataInputStatus emitNext(DataOutput<T> output) throws Exception {
+        if (blockFuture != null) {
+            return DataInputStatus.NOTHING_AVAILABLE;
+        }
+
+        DataInputStatus status = super.emitNext(output);
+        if (status == DataInputStatus.NOTHING_AVAILABLE) {
+            sourceReader.shouldTriggerCheckpoint().ifPresent(checkpointTriggeringHook);
+        }
+        return status;
+    }
+
+    @Override
+    public CompletableFuture<?> getAvailableFuture() {
+        if (blockFuture != null) {
+            return blockFuture;
+        }
+        return super.getAvailableFuture();
+    }
 }

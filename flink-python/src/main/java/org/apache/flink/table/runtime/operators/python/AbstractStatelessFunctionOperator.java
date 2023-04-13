@@ -27,167 +27,123 @@ import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
 import org.apache.flink.python.PythonFunctionRunner;
-import org.apache.flink.streaming.api.operators.python.AbstractOneInputPythonFunctionOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.table.runtime.runners.python.beam.BeamTableStatelessPythonFunctionRunner;
+import org.apache.flink.table.runtime.runners.python.beam.BeamTablePythonFunctionRunner;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedList;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Base class for all stream operators to execute Python Stateless Functions.
  *
- * @param <IN>    Type of the input elements.
- * @param <OUT>   Type of the output elements.
+ * @param <IN> Type of the input elements.
+ * @param <OUT> Type of the output elements.
  * @param <UDFIN> Type of the UDF input type.
  */
 @Internal
 public abstract class AbstractStatelessFunctionOperator<IN, OUT, UDFIN>
-	extends AbstractOneInputPythonFunctionOperator<IN, OUT> {
+        extends AbstractOneInputPythonFunctionOperator<IN, OUT> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	/**
-	 * The input logical type.
-	 */
-	protected final RowType inputType;
+    /** The input logical type. */
+    protected final RowType inputType;
 
-	/**
-	 * The output logical type.
-	 */
-	protected final RowType outputType;
+    /** The user-defined function input logical type. */
+    protected final RowType udfInputType;
 
-	/**
-	 * The offsets of user-defined function inputs.
-	 */
-	protected final int[] userDefinedFunctionInputOffsets;
+    /** The user-defined function output logical type. */
+    protected final RowType udfOutputType;
 
-	/**
-	 * The options used to configure the Python worker process.
-	 */
-	private final Map<String, String> jobOptions;
+    /**
+     * The queue holding the input elements for which the execution results have not been received.
+     */
+    protected transient LinkedList<IN> forwardedInputQueue;
 
-	/**
-	 * The user-defined function input logical type.
-	 */
-	protected transient RowType userDefinedFunctionInputType;
+    /** Reusable InputStream used to holding the execution results to be deserialized. */
+    protected transient ByteArrayInputStreamWithPos bais;
 
-	/**
-	 * The user-defined function output logical type.
-	 */
-	protected transient RowType userDefinedFunctionOutputType;
+    /** InputStream Wrapper. */
+    protected transient DataInputViewStreamWrapper baisWrapper;
 
-	/**
-	 * The queue holding the input elements for which the execution results have not been received.
-	 */
-	protected transient LinkedList<IN> forwardedInputQueue;
+    /** Reusable OutputStream used to holding the serialized input elements. */
+    protected transient ByteArrayOutputStreamWithPos baos;
 
-	/**
-	 * Reusable InputStream used to holding the execution results to be deserialized.
-	 */
-	protected transient ByteArrayInputStreamWithPos bais;
+    /** OutputStream Wrapper. */
+    protected transient DataOutputViewStreamWrapper baosWrapper;
 
-	/**
-	 * InputStream Wrapper.
-	 */
-	protected transient DataInputViewStreamWrapper baisWrapper;
+    public AbstractStatelessFunctionOperator(
+            Configuration config, RowType inputType, RowType udfInputType, RowType udfOutputType) {
+        super(config);
+        this.inputType = Preconditions.checkNotNull(inputType);
+        this.udfInputType = Preconditions.checkNotNull(udfInputType);
+        this.udfOutputType = Preconditions.checkNotNull(udfOutputType);
+    }
 
-	/**
-	 * Reusable OutputStream used to holding the serialized input elements.
-	 */
-	protected transient ByteArrayOutputStreamWithPos baos;
+    @Override
+    public void open() throws Exception {
+        forwardedInputQueue = new LinkedList<>();
+        bais = new ByteArrayInputStreamWithPos();
+        baisWrapper = new DataInputViewStreamWrapper(bais);
+        baos = new ByteArrayOutputStreamWithPos();
+        baosWrapper = new DataOutputViewStreamWrapper(baos);
+        super.open();
+    }
 
-	/**
-	 * OutputStream Wrapper.
-	 */
-	protected transient DataOutputViewStreamWrapper baosWrapper;
+    @Override
+    public void processElement(StreamRecord<IN> element) throws Exception {
+        IN value = element.getValue();
+        bufferInput(value);
+        processElementInternal(value);
+        elementCount++;
+        checkInvokeFinishBundleByCount();
+        emitResults();
+    }
 
-	public AbstractStatelessFunctionOperator(
-		Configuration config,
-		RowType inputType,
-		RowType outputType,
-		int[] userDefinedFunctionInputOffsets) {
-		super(config);
-		this.inputType = Preconditions.checkNotNull(inputType);
-		this.outputType = Preconditions.checkNotNull(outputType);
-		this.userDefinedFunctionInputOffsets = Preconditions.checkNotNull(userDefinedFunctionInputOffsets);
-		this.jobOptions = buildJobOptions(config);
-	}
+    @Override
+    public PythonFunctionRunner createPythonFunctionRunner() throws IOException {
+        return BeamTablePythonFunctionRunner.stateless(
+                getRuntimeContext().getTaskName(),
+                createPythonEnvironmentManager(),
+                getFunctionUrn(),
+                createUserDefinedFunctionsProto(),
+                getFlinkMetricContainer(),
+                getContainingTask().getEnvironment().getMemoryManager(),
+                getOperatorConfig()
+                        .getManagedMemoryFractionOperatorUseCaseOfSlot(
+                                ManagedMemoryUseCase.PYTHON,
+                                getContainingTask()
+                                        .getEnvironment()
+                                        .getTaskManagerInfo()
+                                        .getConfiguration(),
+                                getContainingTask()
+                                        .getEnvironment()
+                                        .getUserCodeClassLoader()
+                                        .asClassLoader()),
+                createInputCoderInfoDescriptor(udfInputType),
+                createOutputCoderInfoDescriptor(udfOutputType));
+    }
 
-	@Override
-	public void open() throws Exception {
-		forwardedInputQueue = new LinkedList<>();
-		userDefinedFunctionInputType = new RowType(
-			Arrays.stream(userDefinedFunctionInputOffsets)
-				.mapToObj(i -> inputType.getFields().get(i))
-				.collect(Collectors.toList()));
-		bais = new ByteArrayInputStreamWithPos();
-		baisWrapper = new DataInputViewStreamWrapper(bais);
-		baos = new ByteArrayOutputStreamWithPos();
-		baosWrapper = new DataOutputViewStreamWrapper(baos);
-		super.open();
-	}
+    /**
+     * Buffers the specified input, it will be used to construct the operator result together with
+     * the user-defined function execution result.
+     */
+    public abstract void bufferInput(IN input) throws Exception;
 
-	@Override
-	public void processElement(StreamRecord<IN> element) throws Exception {
-		IN value = element.getValue();
-		bufferInput(value);
-		processElementInternal(value);
-		elementCount++;
-		checkInvokeFinishBundleByCount();
-		emitResults();
-	}
+    public abstract UDFIN getFunctionInput(IN element);
 
-	@Override
-	public PythonFunctionRunner createPythonFunctionRunner() throws IOException {
-		return new BeamTableStatelessPythonFunctionRunner(
-			getRuntimeContext().getTaskName(),
-			createPythonEnvironmentManager(),
-			userDefinedFunctionInputType,
-			userDefinedFunctionOutputType,
-			getFunctionUrn(),
-			getUserDefinedFunctionsProto(),
-			getInputOutputCoderUrn(),
-			jobOptions,
-			getFlinkMetricContainer(),
-			getContainingTask().getEnvironment().getMemoryManager(),
-			getOperatorConfig().getManagedMemoryFractionOperatorUseCaseOfSlot(
-				ManagedMemoryUseCase.PYTHON,
-				getContainingTask().getEnvironment().getTaskManagerInfo().getConfiguration(),
-				getContainingTask().getEnvironment().getUserCodeClassLoader().asClassLoader()));
-	}
+    /** Gets the proto representation of the Python user-defined functions to be executed. */
+    public abstract FlinkFnApi.UserDefinedFunctions createUserDefinedFunctionsProto();
 
-	/**
-	 * Buffers the specified input, it will be used to construct
-	 * the operator result together with the user-defined function execution result.
-	 */
-	public abstract void bufferInput(IN input) throws Exception;
+    public abstract String getFunctionUrn();
 
-	public abstract UDFIN getFunctionInput(IN element);
+    public abstract FlinkFnApi.CoderInfoDescriptor createInputCoderInfoDescriptor(
+            RowType runnerInputType);
 
-	/**
-	 * Gets the proto representation of the Python user-defined functions to be executed.
-	 */
-	public abstract FlinkFnApi.UserDefinedFunctions getUserDefinedFunctionsProto();
+    public abstract FlinkFnApi.CoderInfoDescriptor createOutputCoderInfoDescriptor(
+            RowType runnerOutType);
 
-	public abstract String getInputOutputCoderUrn();
-
-	public abstract String getFunctionUrn();
-
-	public abstract void processElementInternal(IN value) throws Exception;
-
-	private Map<String, String> buildJobOptions(Configuration config) {
-		Map<String, String> jobOptions = new HashMap<>();
-		if (config.containsKey("table.exec.timezone")) {
-			jobOptions.put("table.exec.timezone", config.getString("table.exec.timezone", null));
-		}
-		return jobOptions;
-	}
-
+    public abstract void processElementInternal(IN value) throws Exception;
 }

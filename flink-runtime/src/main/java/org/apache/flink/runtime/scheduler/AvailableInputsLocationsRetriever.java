@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.scheduler;
 
+import org.apache.flink.runtime.scheduler.strategy.ConsumedPartitionGroup;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 
@@ -25,26 +26,32 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * {@link InputsLocationsRetriever} which filters out only already available input locations.
- */
+/** {@link InputsLocationsRetriever} which filters out only already available input locations. */
 class AvailableInputsLocationsRetriever implements InputsLocationsRetriever {
-	private final InputsLocationsRetriever inputsLocationsRetriever;
+    private final InputsLocationsRetriever inputsLocationsRetriever;
 
-	AvailableInputsLocationsRetriever(InputsLocationsRetriever inputsLocationsRetriever) {
-		this.inputsLocationsRetriever = inputsLocationsRetriever;
-	}
+    AvailableInputsLocationsRetriever(InputsLocationsRetriever inputsLocationsRetriever) {
+        this.inputsLocationsRetriever = inputsLocationsRetriever;
+    }
 
-	@Override
-	public Collection<Collection<ExecutionVertexID>> getConsumedResultPartitionsProducers(
-			ExecutionVertexID executionVertexId) {
-		return inputsLocationsRetriever.getConsumedResultPartitionsProducers(executionVertexId);
-	}
+    @Override
+    public Collection<ConsumedPartitionGroup> getConsumedPartitionGroups(
+            ExecutionVertexID executionVertexId) {
+        return inputsLocationsRetriever.getConsumedPartitionGroups(executionVertexId);
+    }
 
-	@Override
-	public Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(ExecutionVertexID executionVertexId) {
-		return inputsLocationsRetriever
-			.getTaskManagerLocation(executionVertexId)
-			.filter(future -> future.isDone() && !future.isCompletedExceptionally());
-	}
+    @Override
+    public Collection<ExecutionVertexID> getProducersOfConsumedPartitionGroup(
+            ConsumedPartitionGroup consumedPartitionGroup) {
+        return inputsLocationsRetriever.getProducersOfConsumedPartitionGroup(
+                consumedPartitionGroup);
+    }
+
+    @Override
+    public Optional<CompletableFuture<TaskManagerLocation>> getTaskManagerLocation(
+            ExecutionVertexID executionVertexId) {
+        return inputsLocationsRetriever
+                .getTaskManagerLocation(executionVertexId)
+                .filter(future -> future.isDone() && !future.isCompletedExceptionally());
+    }
 }

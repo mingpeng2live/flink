@@ -49,330 +49,323 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Tests implementations for {@link DeserializationFormatFactory} and {@link SerializationFormatFactory}.
+ * Tests implementations for {@link DeserializationFormatFactory} and {@link
+ * SerializationFormatFactory}.
  */
 public class TestFormatFactory implements DeserializationFormatFactory, SerializationFormatFactory {
 
-	public static final String IDENTIFIER = "test-format";
+    public static final String IDENTIFIER = "test-format";
 
-	public static final ConfigOption<String> DELIMITER = ConfigOptions
-		.key("delimiter")
-		.stringType()
-		.noDefaultValue();
+    public static final ConfigOption<String> DELIMITER =
+            ConfigOptions.key("delimiter")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDeprecatedKeys("deprecated-delimiter");
 
-	public static final ConfigOption<Boolean> FAIL_ON_MISSING = ConfigOptions
-		.key("fail-on-missing")
-		.booleanType()
-		.defaultValue(false);
+    public static final ConfigOption<Boolean> FAIL_ON_MISSING =
+            ConfigOptions.key("fail-on-missing")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withFallbackKeys("fallback-fail-on-missing");
 
-	public static final ConfigOption<List<String>> CHANGELOG_MODE = ConfigOptions
-			.key("changelog-mode")
-			.stringType()
-			.asList()
-			.noDefaultValue();
+    public static final ConfigOption<List<String>> CHANGELOG_MODE =
+            ConfigOptions.key("changelog-mode").stringType().asList().noDefaultValue();
 
-	private static final ConfigOption<Map<String, String>> READABLE_METADATA = ConfigOptions
-		.key("readable-metadata")
-		.mapType()
-		.defaultValue(Collections.emptyMap())
-		.withDescription(
-			"Optional map of 'metadata_key:data_type,...'. The order will be alphabetically.");
+    private static final ConfigOption<Map<String, String>> READABLE_METADATA =
+            ConfigOptions.key("readable-metadata")
+                    .mapType()
+                    .defaultValue(Collections.emptyMap())
+                    .withDescription(
+                            "Optional map of 'metadata_key:data_type,...'. The order will be alphabetically.");
 
-	@Override
-	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatConfig) {
+    @Override
+    public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatConfig) {
 
-		FactoryUtil.validateFactoryOptions(this, formatConfig);
+        FactoryUtil.validateFactoryOptions(this, formatConfig);
 
-		final Map<String, DataType> readableMetadata = convertToMetadataMap(
-			formatConfig.get(READABLE_METADATA),
-			context.getClassLoader());
+        final Map<String, DataType> readableMetadata =
+                convertToMetadataMap(formatConfig.get(READABLE_METADATA), context.getClassLoader());
 
-		final ChangelogMode changelogMode = parseChangelogMode(formatConfig);
+        final ChangelogMode changelogMode = parseChangelogMode(formatConfig);
 
-		return new DecodingFormatMock(
-				formatConfig.get(DELIMITER),
-				formatConfig.get(FAIL_ON_MISSING),
-				changelogMode,
-				readableMetadata);
-	}
+        return new DecodingFormatMock(
+                formatConfig.get(DELIMITER),
+                formatConfig.get(FAIL_ON_MISSING),
+                changelogMode,
+                readableMetadata);
+    }
 
-	@Override
-	public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
-			DynamicTableFactory.Context context,
-			ReadableConfig formatConfig) {
+    @Override
+    public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
+            DynamicTableFactory.Context context, ReadableConfig formatConfig) {
 
-		FactoryUtil.validateFactoryOptions(this, formatConfig);
+        FactoryUtil.validateFactoryOptions(this, formatConfig);
 
-		final ChangelogMode changelogMode = parseChangelogMode(formatConfig);
+        final ChangelogMode changelogMode = parseChangelogMode(formatConfig);
 
-		return new EncodingFormatMock(
-				formatConfig.get(DELIMITER),
-				changelogMode);
-	}
+        return new EncodingFormatMock(formatConfig.get(DELIMITER), changelogMode);
+    }
 
-	@Override
-	public String factoryIdentifier() {
-		return IDENTIFIER;
-	}
+    @Override
+    public String factoryIdentifier() {
+        return IDENTIFIER;
+    }
 
-	@Override
-	public Set<ConfigOption<?>> requiredOptions() {
-		final Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(DELIMITER);
-		return options;
-	}
+    @Override
+    public Set<ConfigOption<?>> requiredOptions() {
+        final Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(DELIMITER);
+        return options;
+    }
 
-	@Override
-	public Set<ConfigOption<?>> optionalOptions() {
-		final Set<ConfigOption<?>> options = new HashSet<>();
-		options.add(FAIL_ON_MISSING);
-		options.add(CHANGELOG_MODE);
-		options.add(READABLE_METADATA);
-		return options;
-	}
+    @Override
+    public Set<ConfigOption<?>> optionalOptions() {
+        final Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(FAIL_ON_MISSING);
+        options.add(CHANGELOG_MODE);
+        options.add(READABLE_METADATA);
+        return options;
+    }
 
-	private static Map<String, DataType> convertToMetadataMap(
-			Map<String, String> metadataOption,
-			ClassLoader classLoader) {
-		return metadataOption.keySet()
-			.stream()
-			.sorted()
-			.collect(
-				Collectors.toMap(
-					Function.identity(),
-					key -> {
-						final String typeString = metadataOption.get(key);
-						final LogicalType type = LogicalTypeParser.parse(typeString, classLoader);
-						return TypeConversions.fromLogicalToDataType(type);
-					},
-					(u, v) -> {
-						throw new IllegalStateException();
-					},
-					LinkedHashMap::new
-				)
-			);
-	}
+    @Override
+    public Set<ConfigOption<?>> forwardOptions() {
+        final Set<ConfigOption<?>> options = new HashSet<>();
+        options.add(DELIMITER);
+        return options;
+    }
 
-	// --------------------------------------------------------------------------------------------
-	// Table source format & deserialization schema
-	// --------------------------------------------------------------------------------------------
+    private static Map<String, DataType> convertToMetadataMap(
+            Map<String, String> metadataOption, ClassLoader classLoader) {
+        return metadataOption.keySet().stream()
+                .sorted()
+                .collect(
+                        Collectors.toMap(
+                                Function.identity(),
+                                key -> {
+                                    final String typeString = metadataOption.get(key);
+                                    final LogicalType type =
+                                            LogicalTypeParser.parse(typeString, classLoader);
+                                    return TypeConversions.fromLogicalToDataType(type);
+                                },
+                                (u, v) -> {
+                                    throw new IllegalStateException();
+                                },
+                                LinkedHashMap::new));
+    }
 
-	/**
-	 * {@link DecodingFormat} for testing.
-	 */
-	public static class DecodingFormatMock implements DecodingFormat<DeserializationSchema<RowData>> {
+    // --------------------------------------------------------------------------------------------
+    // Table source format & deserialization schema
+    // --------------------------------------------------------------------------------------------
 
-		public final String delimiter;
-		public final Boolean failOnMissing;
-		private final ChangelogMode changelogMode;
-		public final Map<String, DataType> readableMetadata;
+    /** {@link DecodingFormat} for testing. */
+    public static class DecodingFormatMock
+            implements DecodingFormat<DeserializationSchema<RowData>> {
 
-		// we make the format stateful for capturing parameterization during testing
-		public DataType producedDataType;
-		public List<String> metadataKeys;
+        public final String delimiter;
+        public final Boolean failOnMissing;
+        private final ChangelogMode changelogMode;
+        public final Map<String, DataType> readableMetadata;
 
-		public DecodingFormatMock(
-				String delimiter,
-				Boolean failOnMissing,
-				ChangelogMode changelogMode,
-				Map<String, DataType> readableMetadata) {
-			this.delimiter = delimiter;
-			this.failOnMissing = failOnMissing;
-			this.changelogMode = changelogMode;
-			this.readableMetadata = readableMetadata;
-			this.metadataKeys = Collections.emptyList();
-		}
+        // we make the format stateful for capturing parameterization during testing
+        public DataType producedDataType;
+        public List<String> metadataKeys;
 
-		public DecodingFormatMock(String delimiter, Boolean failOnMissing) {
-			this(delimiter, failOnMissing, ChangelogMode.insertOnly(), Collections.emptyMap());
-		}
+        public DecodingFormatMock(
+                String delimiter,
+                Boolean failOnMissing,
+                ChangelogMode changelogMode,
+                Map<String, DataType> readableMetadata) {
+            this.delimiter = delimiter;
+            this.failOnMissing = failOnMissing;
+            this.changelogMode = changelogMode;
+            this.readableMetadata = readableMetadata;
+            this.metadataKeys = Collections.emptyList();
+        }
 
-		@Override
-		public DeserializationSchema<RowData> createRuntimeDecoder(
-				DynamicTableSource.Context context,
-				DataType physicalDataType) {
+        public DecodingFormatMock(String delimiter, Boolean failOnMissing) {
+            this(delimiter, failOnMissing, ChangelogMode.insertOnly(), Collections.emptyMap());
+        }
 
-			final List<DataTypes.Field> metadataFields = metadataKeys.stream()
-				.map(k -> DataTypes.FIELD(k, readableMetadata.get(k)))
-				.collect(Collectors.toList());
+        @Override
+        public DeserializationSchema<RowData> createRuntimeDecoder(
+                DynamicTableSource.Context context, DataType physicalDataType) {
 
-			this.producedDataType = DataTypeUtils.appendRowFields(physicalDataType, metadataFields);
+            final List<DataTypes.Field> metadataFields =
+                    metadataKeys.stream()
+                            .map(k -> DataTypes.FIELD(k, readableMetadata.get(k)))
+                            .collect(Collectors.toList());
 
-			return new DeserializationSchemaMock(context.createTypeInformation(producedDataType));
-		}
+            this.producedDataType = DataTypeUtils.appendRowFields(physicalDataType, metadataFields);
 
-		@Override
-		public Map<String, DataType> listReadableMetadata() {
-			return readableMetadata;
-		}
+            return new DeserializationSchemaMock(context.createTypeInformation(producedDataType));
+        }
 
-		@Override
-		public void applyReadableMetadata(List<String> metadataKeys) {
-			this.metadataKeys = metadataKeys;
-		}
+        @Override
+        public Map<String, DataType> listReadableMetadata() {
+            return readableMetadata;
+        }
 
-		@Override
-		public ChangelogMode getChangelogMode() {
-			return changelogMode;
-		}
+        @Override
+        public void applyReadableMetadata(List<String> metadataKeys) {
+            this.metadataKeys = metadataKeys;
+        }
 
-		@Override
-		public boolean equals(Object o) {
-			if (this == o) {
-				return true;
-			}
-			if (o == null || getClass() != o.getClass()) {
-				return false;
-			}
-			DecodingFormatMock that = (DecodingFormatMock) o;
-			return delimiter.equals(that.delimiter)
-					&& failOnMissing.equals(that.failOnMissing)
-					&& changelogMode.equals(that.changelogMode)
-					&& readableMetadata.equals(that.readableMetadata)
-					&& Objects.equals(producedDataType, that.producedDataType)
-					&& Objects.equals(metadataKeys, that.metadataKeys);
-		}
+        @Override
+        public ChangelogMode getChangelogMode() {
+            return changelogMode;
+        }
 
-		@Override
-		public int hashCode() {
-			return Objects.hash(
-				delimiter,
-				failOnMissing,
-				changelogMode,
-				readableMetadata,
-				producedDataType,
-				metadataKeys);
-		}
-	}
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            DecodingFormatMock that = (DecodingFormatMock) o;
+            return delimiter.equals(that.delimiter)
+                    && failOnMissing.equals(that.failOnMissing)
+                    && changelogMode.equals(that.changelogMode)
+                    && readableMetadata.equals(that.readableMetadata)
+                    && Objects.equals(producedDataType, that.producedDataType)
+                    && Objects.equals(metadataKeys, that.metadataKeys);
+        }
 
-	/**
-	 * {@link DeserializationSchema} for testing.
-	 */
-	private static class DeserializationSchemaMock implements DeserializationSchema<RowData> {
+        @Override
+        public int hashCode() {
+            return Objects.hash(
+                    delimiter,
+                    failOnMissing,
+                    changelogMode,
+                    readableMetadata,
+                    producedDataType,
+                    metadataKeys);
+        }
+    }
 
-		private final TypeInformation<RowData> producedTypeInfo;
+    /** {@link DeserializationSchema} for testing. */
+    private static class DeserializationSchemaMock implements DeserializationSchema<RowData> {
 
-		private DeserializationSchemaMock(TypeInformation<RowData> producedTypeInfo) {
-			this.producedTypeInfo = producedTypeInfo;
-		}
+        private final TypeInformation<RowData> producedTypeInfo;
 
-		@Override
-		public RowData deserialize(byte[] message) {
-			String msg = "Test deserialization schema doesn't support deserialize.";
-			throw new UnsupportedOperationException(msg);
-		}
+        private DeserializationSchemaMock(TypeInformation<RowData> producedTypeInfo) {
+            this.producedTypeInfo = producedTypeInfo;
+        }
 
-		@Override
-		public boolean isEndOfStream(RowData nextElement) {
-			return false;
-		}
+        @Override
+        public RowData deserialize(byte[] message) {
+            String msg = "Test deserialization schema doesn't support deserialize.";
+            throw new UnsupportedOperationException(msg);
+        }
 
-		@Override
-		public TypeInformation<RowData> getProducedType() {
-			return producedTypeInfo;
-		}
-	}
+        @Override
+        public boolean isEndOfStream(RowData nextElement) {
+            return false;
+        }
 
-	// --------------------------------------------------------------------------------------------
-	// Table sink format & serialization schema
-	// --------------------------------------------------------------------------------------------
+        @Override
+        public TypeInformation<RowData> getProducedType() {
+            return producedTypeInfo;
+        }
+    }
 
-	/**
-	 * {@link EncodingFormat} for testing.
-	 */
-	public static class EncodingFormatMock implements EncodingFormat<SerializationSchema<RowData>> {
+    // --------------------------------------------------------------------------------------------
+    // Table sink format & serialization schema
+    // --------------------------------------------------------------------------------------------
 
-		public final String delimiter;
+    /** {@link EncodingFormat} for testing. */
+    public static class EncodingFormatMock implements EncodingFormat<SerializationSchema<RowData>> {
 
-		// we make the format stateful for capturing parameterization during testing
-		public DataType consumedDataType;
+        public final String delimiter;
 
-		private ChangelogMode changelogMode;
+        // we make the format stateful for capturing parameterization during testing
+        public DataType consumedDataType;
 
-		public EncodingFormatMock(String delimiter, ChangelogMode changelogMode) {
-			this.delimiter = delimiter;
-			this.changelogMode = changelogMode;
-		}
+        private ChangelogMode changelogMode;
 
-		public EncodingFormatMock(String delimiter) {
-			this(delimiter, ChangelogMode.insertOnly());
-		}
+        public EncodingFormatMock(String delimiter, ChangelogMode changelogMode) {
+            this.delimiter = delimiter;
+            this.changelogMode = changelogMode;
+        }
 
-		@Override
-		public SerializationSchema<RowData> createRuntimeEncoder(
-				DynamicTableSink.Context context,
-				DataType physicalDataType) {
-			this.consumedDataType = physicalDataType;
-			return new SerializationSchemaMock();
-		}
+        public EncodingFormatMock(String delimiter) {
+            this(delimiter, ChangelogMode.insertOnly());
+        }
 
-		@Override
-		public ChangelogMode getChangelogMode() {
-			return changelogMode;
-		}
+        @Override
+        public SerializationSchema<RowData> createRuntimeEncoder(
+                DynamicTableSink.Context context, DataType physicalDataType) {
+            this.consumedDataType = physicalDataType;
+            return new SerializationSchemaMock();
+        }
 
-		@Override
-		public boolean equals(Object o) {
-			if (this == o) {
-				return true;
-			}
-			if (o == null || getClass() != o.getClass()) {
-				return false;
-			}
-			EncodingFormatMock that = (EncodingFormatMock) o;
-			return delimiter.equals(that.delimiter)
-					&& changelogMode.equals(that.changelogMode)
-					&& Objects.equals(consumedDataType, that.consumedDataType);
-		}
+        @Override
+        public ChangelogMode getChangelogMode() {
+            return changelogMode;
+        }
 
-		@Override
-		public int hashCode() {
-			return Objects.hash(delimiter, changelogMode, consumedDataType);
-		}
-	}
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            EncodingFormatMock that = (EncodingFormatMock) o;
+            return delimiter.equals(that.delimiter)
+                    && changelogMode.equals(that.changelogMode)
+                    && Objects.equals(consumedDataType, that.consumedDataType);
+        }
 
-	/**
-	 * {@link SerializationSchema} for testing.
-	 */
-	private static class SerializationSchemaMock implements SerializationSchema<RowData> {
-		@Override
-		public byte[] serialize(RowData element) {
-			String msg = "Test serialization schema doesn't support serialize.";
-			throw new UnsupportedOperationException(msg);
-		}
-	}
+        @Override
+        public int hashCode() {
+            return Objects.hash(delimiter, changelogMode, consumedDataType);
+        }
+    }
 
-	// --------------------------------------------------------------------------------------------
-	// Utils
-	// --------------------------------------------------------------------------------------------
+    /** {@link SerializationSchema} for testing. */
+    private static class SerializationSchemaMock implements SerializationSchema<RowData> {
+        @Override
+        public byte[] serialize(RowData element) {
+            String msg = "Test serialization schema doesn't support serialize.";
+            throw new UnsupportedOperationException(msg);
+        }
+    }
 
-	private static ChangelogMode parseChangelogMode(ReadableConfig config) {
-		if (config.getOptional(CHANGELOG_MODE).isPresent()) {
-			ChangelogMode.Builder builder = ChangelogMode.newBuilder();
-			for (String mode : config.get(CHANGELOG_MODE)) {
-				switch (mode) {
-					case "I":
-						builder.addContainedKind(RowKind.INSERT);
-						break;
-					case "UA":
-						builder.addContainedKind(RowKind.UPDATE_AFTER);
-						break;
-					case "UB":
-						builder.addContainedKind(RowKind.UPDATE_BEFORE);
-						break;
-					case "D":
-						builder.addContainedKind(RowKind.DELETE);
-						break;
-					default:
-						throw new IllegalArgumentException(
-								String.format("Unrecognized type %s for config %s", mode, CHANGELOG_MODE.key()));
-				}
-			}
-			return builder.build();
-		} else {
-			return ChangelogMode.insertOnly();
-		}
-	}
+    // --------------------------------------------------------------------------------------------
+    // Utils
+    // --------------------------------------------------------------------------------------------
+
+    private static ChangelogMode parseChangelogMode(ReadableConfig config) {
+        if (config.getOptional(CHANGELOG_MODE).isPresent()) {
+            ChangelogMode.Builder builder = ChangelogMode.newBuilder();
+            for (String mode : config.get(CHANGELOG_MODE)) {
+                switch (mode) {
+                    case "I":
+                        builder.addContainedKind(RowKind.INSERT);
+                        break;
+                    case "UA":
+                        builder.addContainedKind(RowKind.UPDATE_AFTER);
+                        break;
+                    case "UB":
+                        builder.addContainedKind(RowKind.UPDATE_BEFORE);
+                        break;
+                    case "D":
+                        builder.addContainedKind(RowKind.DELETE);
+                        break;
+                    default:
+                        throw new IllegalArgumentException(
+                                String.format(
+                                        "Unrecognized type %s for config %s",
+                                        mode, CHANGELOG_MODE.key()));
+                }
+            }
+            return builder.build();
+        } else {
+            return ChangelogMode.insertOnly();
+        }
+    }
 }

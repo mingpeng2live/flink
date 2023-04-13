@@ -25,181 +25,283 @@ import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
-import org.apache.flink.runtime.concurrent.FutureUtils;
+import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.jobmanager.scheduler.NoResourceAvailableException;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.RpcTaskManagerGateway;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
-import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
+import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
 import org.apache.flink.runtime.taskmanager.LocalTaskManagerLocation;
+import org.apache.flink.runtime.util.ResourceCounter;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.clock.SystemClock;
+import org.apache.flink.util.concurrent.FutureUtils;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import javax.annotation.Nonnull;
 
+import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.fail;
 
-/**
- * Tests for the {@link DeclarativeSlotPoolBridge}.
- */
+/** Tests for the {@link DeclarativeSlotPoolBridge}. */
+@RunWith(Parameterized.class)
 public class DeclarativeSlotPoolBridgeTest extends TestLogger {
 
-	private static final Time rpcTimeout = Time.seconds(20);
-	private static final JobID jobId = new JobID();
-	private static final JobMasterId jobMasterId = JobMasterId.generate();
-	private final ComponentMainThreadExecutor mainThreadExecutor = ComponentMainThreadExecutorServiceAdapter.forMainThread();
+    private static final Time rpcTimeout = Time.seconds(20);
+    private static final JobID jobId = new JobID();
+    private static final JobMasterId jobMasterId = JobMasterId.generate();
+    private final ComponentMainThreadExecutor mainThreadExecutor =
+            ComponentMainThreadExecutorServiceAdapter.forMainThread();
+    private final RequestSlotMatchingStrategy requestSlotMatchingStrategy;
 
-	@Test
-	public void testSlotOffer() throws Exception {
-		final SlotRequestId slotRequestId = new SlotRequestId();
-		final AllocationID expectedAllocationId = new AllocationID();
-		final PhysicalSlot allocatedSlot = createAllocatedSlot(expectedAllocationId);
+    @Parameterized.Parameters(name = "RequestSlotMatchingStrategy: {0}")
+    public static Collection<RequestSlotMatchingStrategy> data() throws IOException {
+        return Arrays.asList(
+                SimpleRequestSlotMatchingStrategy.INSTANCE,
+                PreferredAllocationRequestSlotMatchingStrategy.INSTANCE);
+    }
 
-		final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory = new TestingDeclarativeSlotPoolFactory(TestingDeclarativeSlotPool.builder());
-		try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge = createDeclarativeSlotPoolBridge(declarativeSlotPoolFactory)) {
+    public DeclarativeSlotPoolBridgeTest(RequestSlotMatchingStrategy requestSlotMatchingStrategy) {
+        this.requestSlotMatchingStrategy = requestSlotMatchingStrategy;
+    }
 
-			declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+    @Test
+    public void testSlotOffer() throws Exception {
+        final SlotRequestId slotRequestId = new SlotRequestId();
+        final AllocationID expectedAllocationId = new AllocationID();
+        final PhysicalSlot allocatedSlot = createAllocatedSlot(expectedAllocationId);
 
-			CompletableFuture<PhysicalSlot> slotAllocationFuture = declarativeSlotPoolBridge.requestNewAllocatedSlot(slotRequestId, ResourceProfile.UNKNOWN, null);
+        final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory =
+                new TestingDeclarativeSlotPoolFactory(TestingDeclarativeSlotPool.builder());
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        declarativeSlotPoolFactory, requestSlotMatchingStrategy)) {
 
-			declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(allocatedSlot));
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			slotAllocationFuture.join();
-		}
-	}
+            CompletableFuture<PhysicalSlot> slotAllocationFuture =
+                    declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                            slotRequestId, ResourceProfile.UNKNOWN, null);
 
-	@Test
-	public void testNotEnoughResourcesAvailableFailsPendingRequests() throws Exception {
-		final SlotRequestId slotRequestId = new SlotRequestId();
+            declarativeSlotPoolBridge.newSlotsAreAvailable(Collections.singleton(allocatedSlot));
 
-		final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory = new TestingDeclarativeSlotPoolFactory(TestingDeclarativeSlotPool.builder());
-		try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge = createDeclarativeSlotPoolBridge(declarativeSlotPoolFactory)) {
+            slotAllocationFuture.join();
+        }
+    }
 
-			declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+    @Test
+    public void testNotEnoughResourcesAvailableFailsPendingRequests() throws Exception {
+        final SlotRequestId slotRequestId = new SlotRequestId();
 
-			CompletableFuture<PhysicalSlot> slotAllocationFuture = CompletableFuture
-					.supplyAsync(() -> declarativeSlotPoolBridge.requestNewAllocatedSlot(slotRequestId, ResourceProfile.UNKNOWN, Time.minutes(5)), mainThreadExecutor)
-					.get();
+        final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory =
+                new TestingDeclarativeSlotPoolFactory(TestingDeclarativeSlotPool.builder());
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        declarativeSlotPoolFactory, requestSlotMatchingStrategy)) {
 
-			mainThreadExecutor.execute(() -> declarativeSlotPoolBridge.notifyNotEnoughResourcesAvailable(Collections.emptyList()));
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			assertThat(
-				slotAllocationFuture,
-				FlinkMatchers.futureWillCompleteExceptionally(
-					NoResourceAvailableException.class,
-					Duration.ofSeconds(10)));
-		}
-	}
+            CompletableFuture<PhysicalSlot> slotAllocationFuture =
+                    CompletableFuture.supplyAsync(
+                                    () ->
+                                            declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                                                    slotRequestId,
+                                                    ResourceProfile.UNKNOWN,
+                                                    Time.minutes(5)),
+                                    mainThreadExecutor)
+                            .get();
 
-	@Test
-	public void testReleasingAllocatedSlot() throws Exception {
-		final CompletableFuture<AllocationID> releaseSlotFuture = new CompletableFuture<>();
-		final AllocationID expectedAllocationId = new AllocationID();
-		final PhysicalSlot allocatedSlot = createAllocatedSlot(expectedAllocationId);
+            mainThreadExecutor.execute(
+                    () ->
+                            declarativeSlotPoolBridge.notifyNotEnoughResourcesAvailable(
+                                    Collections.emptyList()));
 
-		final TestingDeclarativeSlotPoolBuilder builder = TestingDeclarativeSlotPool
-				.builder()
-				.setReserveFreeSlotFunction((allocationId, resourceProfile) -> {
-					assertThat(allocationId, is(expectedAllocationId));
-					return allocatedSlot;
-				})
-				.setFreeReservedSlotFunction((allocationID, throwable, aLong) -> {
-					releaseSlotFuture.complete(allocationID);
-					return ResourceCounter.empty();
-				});
+            assertThat(
+                    slotAllocationFuture,
+                    FlinkMatchers.futureWillCompleteExceptionally(
+                            NoResourceAvailableException.class, Duration.ofSeconds(10)));
+        }
+    }
 
-		final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory = new TestingDeclarativeSlotPoolFactory(builder);
-		try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge = createDeclarativeSlotPoolBridge(declarativeSlotPoolFactory)) {
-			declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+    @Test
+    public void testReleasingAllocatedSlot() throws Exception {
+        final CompletableFuture<AllocationID> releaseSlotFuture = new CompletableFuture<>();
+        final AllocationID expectedAllocationId = new AllocationID();
+        final PhysicalSlot allocatedSlot = createAllocatedSlot(expectedAllocationId);
 
-			final SlotRequestId slotRequestId = new SlotRequestId();
+        final TestingDeclarativeSlotPoolBuilder builder =
+                TestingDeclarativeSlotPool.builder()
+                        .setReserveFreeSlotFunction(
+                                (allocationId, resourceProfile) -> {
+                                    assertThat(allocationId, is(expectedAllocationId));
+                                    return allocatedSlot;
+                                })
+                        .setFreeReservedSlotFunction(
+                                (allocationID, throwable, aLong) -> {
+                                    releaseSlotFuture.complete(allocationID);
+                                    return ResourceCounter.empty();
+                                });
 
-			declarativeSlotPoolBridge.allocateAvailableSlot(slotRequestId, expectedAllocationId, allocatedSlot.getResourceProfile());
-			declarativeSlotPoolBridge.releaseSlot(slotRequestId, null);
+        final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory =
+                new TestingDeclarativeSlotPoolFactory(builder);
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        declarativeSlotPoolFactory, requestSlotMatchingStrategy)) {
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			assertThat(releaseSlotFuture.join(), is(expectedAllocationId));
-		}
-	}
+            final SlotRequestId slotRequestId = new SlotRequestId();
 
-	@Test
-	public void testNoConcurrentModificationWhenSuspendingAndReleasingSlot() throws Exception {
-		try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge = createDeclarativeSlotPoolBridge(new DefaultDeclarativeSlotPoolFactory())) {
+            declarativeSlotPoolBridge.allocateAvailableSlot(
+                    slotRequestId, expectedAllocationId, allocatedSlot.getResourceProfile());
+            declarativeSlotPoolBridge.releaseSlot(slotRequestId, null);
 
-			declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+            assertThat(releaseSlotFuture.join(), is(expectedAllocationId));
+        }
+    }
 
-			final List<SlotRequestId> slotRequestIds = Arrays.asList(new SlotRequestId(), new SlotRequestId());
+    @Test
+    public void testNoConcurrentModificationWhenSuspendingAndReleasingSlot() throws Exception {
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        new DefaultDeclarativeSlotPoolFactory(), requestSlotMatchingStrategy)) {
 
-			final List<CompletableFuture<PhysicalSlot>> slotFutures = slotRequestIds.stream()
-					.map(slotRequestId -> {
-						final CompletableFuture<PhysicalSlot> slotFuture = declarativeSlotPoolBridge.requestNewAllocatedSlot(slotRequestId, ResourceProfile.UNKNOWN, rpcTimeout);
-						slotFuture.whenComplete((physicalSlot, throwable) -> {
-							if (throwable != null) {
-								declarativeSlotPoolBridge.releaseSlot(slotRequestId, throwable);
-							}
-						});
-						return slotFuture;
-					})
-					.collect(Collectors.toList());
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-			declarativeSlotPoolBridge.suspend();
+            final List<SlotRequestId> slotRequestIds =
+                    Arrays.asList(new SlotRequestId(), new SlotRequestId());
 
-			try {
-				FutureUtils.waitForAll(slotFutures).get();
-				fail("The slot futures should be completed exceptionally.");
-			} catch (ExecutionException expected) {
-				// expected
-			}
-		}
-	}
+            final List<CompletableFuture<PhysicalSlot>> slotFutures =
+                    slotRequestIds.stream()
+                            .map(
+                                    slotRequestId -> {
+                                        final CompletableFuture<PhysicalSlot> slotFuture =
+                                                declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                                                        slotRequestId,
+                                                        ResourceProfile.UNKNOWN,
+                                                        rpcTimeout);
+                                        slotFuture.whenComplete(
+                                                (physicalSlot, throwable) -> {
+                                                    if (throwable != null) {
+                                                        declarativeSlotPoolBridge.releaseSlot(
+                                                                slotRequestId, throwable);
+                                                    }
+                                                });
+                                        return slotFuture;
+                                    })
+                            .collect(Collectors.toList());
 
-	@Nonnull
-	static DeclarativeSlotPoolBridge createDeclarativeSlotPoolBridge(DeclarativeSlotPoolFactory declarativeSlotPoolFactory) {
-		return new DeclarativeSlotPoolBridge(
-				jobId,
-				declarativeSlotPoolFactory,
-				SystemClock.getInstance(),
-				rpcTimeout,
-				Time.seconds(20),
-				Time.seconds(20)
-		);
-	}
+            declarativeSlotPoolBridge.close();
 
-	static PhysicalSlot createAllocatedSlot(AllocationID allocationID) {
-		return new AllocatedSlot(
-				allocationID,
-				new LocalTaskManagerLocation(),
-				0,
-				ResourceProfile.ANY,
-				new RpcTaskManagerGateway(new TestingTaskExecutorGatewayBuilder().createTestingTaskExecutorGateway(), JobMasterId.generate()));
-	}
+            try {
+                FutureUtils.waitForAll(slotFutures).get();
+                fail("The slot futures should be completed exceptionally.");
+            } catch (ExecutionException expected) {
+                // expected
+            }
+        }
+    }
 
-	static final class TestingDeclarativeSlotPoolFactory implements DeclarativeSlotPoolFactory {
+    @Test
+    public void testAcceptingOfferedSlotsWithoutResourceManagerConnected() throws Exception {
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        new DefaultDeclarativeSlotPoolFactory(), requestSlotMatchingStrategy)) {
 
-		final TestingDeclarativeSlotPoolBuilder builder;
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
 
-		public TestingDeclarativeSlotPoolFactory(TestingDeclarativeSlotPoolBuilder builder) {
-			this.builder = builder;
-		}
+            final CompletableFuture<PhysicalSlot> slotFuture =
+                    declarativeSlotPoolBridge.requestNewAllocatedSlot(
+                            new SlotRequestId(), ResourceProfile.UNKNOWN, rpcTimeout);
 
-		@Override
-		public DeclarativeSlotPool create(JobID jobId, Consumer<? super Collection<ResourceRequirement>> notifyNewResourceRequirements, Consumer<? super Collection<? extends PhysicalSlot>> notifyNewSlots, Time idleSlotTimeout, Time rpcTimeout) {
-			return builder.build();
-		}
-	}
+            final LocalTaskManagerLocation localTaskManagerLocation =
+                    new LocalTaskManagerLocation();
+            declarativeSlotPoolBridge.registerTaskManager(localTaskManagerLocation.getResourceID());
 
+            final AllocationID allocationId = new AllocationID();
+            declarativeSlotPoolBridge.offerSlots(
+                    localTaskManagerLocation,
+                    new SimpleAckingTaskManagerGateway(),
+                    Collections.singleton(new SlotOffer(allocationId, 0, ResourceProfile.ANY)));
+
+            assertThat(slotFuture.join().getAllocationId(), is(allocationId));
+        }
+    }
+
+    @Test
+    public void testIfJobIsRestartingAllOfferedSlotsWillBeRegistered() throws Exception {
+        final CompletableFuture<Void> registerSlotsCalledFuture = new CompletableFuture<>();
+        final TestingDeclarativeSlotPoolFactory declarativeSlotPoolFactory =
+                new TestingDeclarativeSlotPoolFactory(
+                        TestingDeclarativeSlotPool.builder()
+                                .setRegisterSlotsFunction(
+                                        (slotOffers,
+                                                taskManagerLocation,
+                                                taskManagerGateway,
+                                                aLong) -> {
+                                            registerSlotsCalledFuture.complete(null);
+                                            return new ArrayList<>(slotOffers);
+                                        }));
+
+        try (DeclarativeSlotPoolBridge declarativeSlotPoolBridge =
+                createDeclarativeSlotPoolBridge(
+                        declarativeSlotPoolFactory, requestSlotMatchingStrategy)) {
+            declarativeSlotPoolBridge.start(jobMasterId, "localhost", mainThreadExecutor);
+
+            declarativeSlotPoolBridge.setIsJobRestarting(true);
+
+            final LocalTaskManagerLocation localTaskManagerLocation =
+                    new LocalTaskManagerLocation();
+            declarativeSlotPoolBridge.registerTaskManager(localTaskManagerLocation.getResourceID());
+
+            declarativeSlotPoolBridge.offerSlots(
+                    localTaskManagerLocation,
+                    new SimpleAckingTaskManagerGateway(),
+                    Collections.singleton(
+                            new SlotOffer(new AllocationID(), 0, ResourceProfile.ANY)));
+
+            // make sure that the register slots method is called
+            registerSlotsCalledFuture.join();
+        }
+    }
+
+    @Nonnull
+    static DeclarativeSlotPoolBridge createDeclarativeSlotPoolBridge(
+            DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
+            RequestSlotMatchingStrategy requestSlotMatchingStrategy) {
+        return new DeclarativeSlotPoolBridge(
+                jobId,
+                declarativeSlotPoolFactory,
+                SystemClock.getInstance(),
+                rpcTimeout,
+                Time.seconds(20),
+                Time.seconds(20),
+                requestSlotMatchingStrategy);
+    }
+
+    static PhysicalSlot createAllocatedSlot(AllocationID allocationID) {
+        return new AllocatedSlot(
+                allocationID,
+                new LocalTaskManagerLocation(),
+                0,
+                ResourceProfile.ANY,
+                new RpcTaskManagerGateway(
+                        new TestingTaskExecutorGatewayBuilder().createTestingTaskExecutorGateway(),
+                        JobMasterId.generate()));
+    }
 }

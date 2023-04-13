@@ -19,50 +19,65 @@
 package org.apache.flink.connector.file.sink;
 
 import org.apache.flink.connector.file.sink.utils.FileSinkTestUtils;
+import org.apache.flink.core.fs.Path;
 
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests the serialization and deserialization for {@link FileSinkCommittable}.
- */
-public class FileCommittableSerializerTest {
+/** Tests the serialization and deserialization for {@link FileSinkCommittable}. */
+class FileCommittableSerializerTest {
 
-	@ClassRule
-	public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @Test
+    void testCommittableWithPendingFile() throws IOException {
+        FileSinkCommittable committable =
+                new FileSinkCommittable("0", new FileSinkTestUtils.TestPendingFileRecoverable());
+        FileSinkCommittable deserialized = serializeAndDeserialize(committable);
+        assertThat(committable.getBucketId()).isEqualTo(deserialized.getBucketId());
+        assertThat(committable.getPendingFile()).isEqualTo(deserialized.getPendingFile());
+        assertThat(committable.getInProgressFileToCleanup())
+                .isEqualTo(deserialized.getInProgressFileToCleanup());
+        assertThat(committable.getCompactedFileToCleanup())
+                .isEqualTo(deserialized.getCompactedFileToCleanup());
+    }
 
-	@Test
-	public void testCommittableWithPendingFile() throws IOException {
-		FileSinkCommittable committable = new FileSinkCommittable(new FileSinkTestUtils.TestPendingFileRecoverable());
-		FileSinkCommittable deserialized = serializeAndDeserialize(committable);
-		assertEquals(committable.getPendingFile(), deserialized.getPendingFile());
-		assertEquals(
-				committable.getInProgressFileToCleanup(),
-				deserialized.getInProgressFileToCleanup());
-	}
+    @Test
+    void testCommittableWithInProgressFileToCleanup() throws IOException {
+        FileSinkCommittable committable =
+                new FileSinkCommittable("0", new FileSinkTestUtils.TestInProgressFileRecoverable());
+        FileSinkCommittable deserialized = serializeAndDeserialize(committable);
+        assertThat(committable.getBucketId()).isEqualTo(deserialized.getBucketId());
+        assertThat(committable.getPendingFile()).isEqualTo(deserialized.getPendingFile());
+        assertThat(committable.getInProgressFileToCleanup())
+                .isEqualTo(deserialized.getInProgressFileToCleanup());
+        assertThat(committable.getCompactedFileToCleanup())
+                .isEqualTo(deserialized.getCompactedFileToCleanup());
+    }
 
-	@Test
-	public void testCommittableWithInProgressFileToCleanup() throws IOException {
-		FileSinkCommittable committable = new FileSinkCommittable(new FileSinkTestUtils.TestInProgressFileRecoverable());
-		FileSinkCommittable deserialized = serializeAndDeserialize(committable);
-		assertEquals(committable.getPendingFile(), deserialized.getPendingFile());
-		assertEquals(
-				committable.getInProgressFileToCleanup(),
-				deserialized.getInProgressFileToCleanup());
-	}
+    @Test
+    void testCommittableWithCompactedFileToCleanup() throws IOException {
+        FileSinkCommittable committable =
+                new FileSinkCommittable("0", new Path("/tmp/mock_path_to_cleanup"));
+        FileSinkCommittable deserialized = serializeAndDeserialize(committable);
+        assertThat(committable.getBucketId()).isEqualTo(deserialized.getBucketId());
+        assertThat(committable.getPendingFile()).isEqualTo(deserialized.getPendingFile());
+        assertThat(committable.getInProgressFileToCleanup())
+                .isEqualTo(deserialized.getInProgressFileToCleanup());
+        assertThat(committable.getCompactedFileToCleanup())
+                .isEqualTo(deserialized.getCompactedFileToCleanup());
+    }
 
-	private FileSinkCommittable serializeAndDeserialize(FileSinkCommittable committable) throws IOException {
-		FileSinkCommittableSerializer serializer = new FileSinkCommittableSerializer(
-				new FileSinkTestUtils.SimpleVersionedWrapperSerializer<>(
-						FileSinkTestUtils.TestPendingFileRecoverable::new),
-				new FileSinkTestUtils.SimpleVersionedWrapperSerializer<>(
-						FileSinkTestUtils.TestInProgressFileRecoverable::new));
-		byte[] data = serializer.serialize(committable);
-		return serializer.deserialize(serializer.getVersion(), data);
-	}
+    private FileSinkCommittable serializeAndDeserialize(FileSinkCommittable committable)
+            throws IOException {
+        FileSinkCommittableSerializer serializer =
+                new FileSinkCommittableSerializer(
+                        new FileSinkTestUtils.SimpleVersionedWrapperSerializer<>(
+                                FileSinkTestUtils.TestPendingFileRecoverable::new),
+                        new FileSinkTestUtils.SimpleVersionedWrapperSerializer<>(
+                                FileSinkTestUtils.TestInProgressFileRecoverable::new));
+        byte[] data = serializer.serialize(committable);
+        return serializer.deserialize(serializer.getVersion(), data);
+    }
 }

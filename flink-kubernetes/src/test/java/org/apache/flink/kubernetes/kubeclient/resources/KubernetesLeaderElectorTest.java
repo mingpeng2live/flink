@@ -21,43 +21,42 @@ package org.apache.flink.kubernetes.kubeclient.resources;
 import org.apache.flink.kubernetes.KubernetesTestBase;
 import org.apache.flink.kubernetes.kubeclient.TestingFlinkKubeClient;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
 
 import static org.apache.flink.kubernetes.kubeclient.resources.KubernetesLeaderElector.LEADER_ANNOTATION_KEY;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for {@link KubernetesLeaderElector}.
- */
-public class KubernetesLeaderElectorTest extends KubernetesTestBase {
+/** Tests for {@link KubernetesLeaderElector}. */
+class KubernetesLeaderElectorTest extends KubernetesTestBase {
 
-	private String lockIdentity;
-	private KubernetesConfigMap leaderConfigMap;
+    private String lockIdentity;
+    private KubernetesConfigMap leaderConfigMap;
 
-	private static final  String CONFIGMAP_NAME = "test-config-map";
+    private static final String CONFIGMAP_NAME = "test-config-map";
 
-	public void onSetup() {
-		lockIdentity = UUID.randomUUID().toString();
-		leaderConfigMap = new TestingFlinkKubeClient.MockKubernetesConfigMap(CONFIGMAP_NAME);
-	}
+    public void onSetup() {
+        lockIdentity = UUID.randomUUID().toString();
+        leaderConfigMap = new TestingFlinkKubeClient.MockKubernetesConfigMap(CONFIGMAP_NAME);
+    }
 
-	@Test
-	public void testNoAnnotation() {
-		assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity), is(false));
-	}
+    @Test
+    void testNoAnnotation() {
+        assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity)).isFalse();
+    }
 
-	@Test
-	public void testAnnotationNotMatch() {
-		leaderConfigMap.getAnnotations().put(LEADER_ANNOTATION_KEY, "wrong lock");
-		assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity), is(false));
-	}
+    @Test
+    void testAnnotationNotMatch() {
+        leaderConfigMap.getAnnotations().put(LEADER_ANNOTATION_KEY, "wrong lock");
+        assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity)).isFalse();
+    }
 
-	@Test
-	public void testAnnotationMatched() {
-		leaderConfigMap.getAnnotations().put(LEADER_ANNOTATION_KEY, "other information " + lockIdentity);
-		assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity), is(true));
-	}
+    @Test
+    void testAnnotationMatched() {
+        leaderConfigMap
+                .getAnnotations()
+                .put(LEADER_ANNOTATION_KEY, "other information " + lockIdentity);
+        assertThat(KubernetesLeaderElector.hasLeadership(leaderConfigMap, lockIdentity)).isTrue();
+    }
 }

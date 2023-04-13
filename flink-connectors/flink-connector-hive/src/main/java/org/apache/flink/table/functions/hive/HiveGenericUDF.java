@@ -34,85 +34,85 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * A ScalarFunction implementation that calls Hive's {@link GenericUDF}.
- */
+/** A ScalarFunction implementation that calls Hive's {@link GenericUDF}. */
 @Internal
 public class HiveGenericUDF extends HiveScalarFunction<GenericUDF> {
 
-	private static final Logger LOG = LoggerFactory.getLogger(HiveGenericUDF.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HiveGenericUDF.class);
 
-	private transient GenericUDF.DeferredObject[] deferredObjects;
-	private HiveShim hiveShim;
+    private final HiveShim hiveShim;
 
-	public HiveGenericUDF(HiveFunctionWrapper<GenericUDF> hiveFunctionWrapper, HiveShim hiveShim) {
-		super(hiveFunctionWrapper);
-		this.hiveShim = hiveShim;
-		LOG.info("Creating HiveGenericUDF from '{}'", hiveFunctionWrapper.getClassName());
-	}
+    private transient GenericUDF.DeferredObject[] deferredObjects;
 
-	@Override
-	public void openInternal() {
+    public HiveGenericUDF(HiveFunctionWrapper<GenericUDF> hiveFunctionWrapper, HiveShim hiveShim) {
+        super(hiveFunctionWrapper);
+        this.hiveShim = hiveShim;
+        LOG.info("Creating HiveGenericUDF from '{}'", hiveFunctionWrapper.getUDFClassName());
+    }
 
-		LOG.info("Open HiveGenericUDF as {}", hiveFunctionWrapper.getClassName());
+    @Override
+    public void openInternal() {
 
-		function = createFunction();
+        LOG.info("Open HiveGenericUDF as {}", hiveFunctionWrapper.getUDFClassName());
 
-		ObjectInspector[] argInspectors = HiveInspectors.toInspectors(hiveShim, constantArguments, argTypes);
+        function = createFunction();
 
-		try {
-			returnInspector = function.initializeAndFoldConstants(argInspectors);
-		} catch (UDFArgumentException e) {
-			throw new FlinkHiveUDFException(e);
-		}
+        ObjectInspector[] argInspectors = HiveInspectors.getArgInspectors(hiveShim, arguments);
 
-		deferredObjects = new GenericUDF.DeferredObject[argTypes.length];
+        try {
+            returnInspector = function.initializeAndFoldConstants(argInspectors);
+        } catch (UDFArgumentException e) {
+            throw new FlinkHiveUDFException(e);
+        }
 
-		for (int i = 0; i < deferredObjects.length; i++) {
-			deferredObjects[i] = new DeferredObjectAdapter(
-				argInspectors[i],
-				argTypes[i].getLogicalType(),
-				hiveShim
-			);
-		}
-	}
+        deferredObjects = new GenericUDF.DeferredObject[arguments.size()];
 
-	@Override
-	public Object evalInternal(Object[] args) {
+        for (int i = 0; i < deferredObjects.length; i++) {
+            deferredObjects[i] =
+                    new DeferredObjectAdapter(
+                            argInspectors[i], arguments.getDataType(i).getLogicalType(), hiveShim);
+        }
+    }
 
-		for (int i = 0; i < args.length; i++) {
-			((DeferredObjectAdapter) deferredObjects[i]).set(args[i]);
-		}
+    @Override
+    public Object evalInternal(Object[] args) {
 
-		try {
-			Object result = returnInspector instanceof ConstantObjectInspector ?
-					((ConstantObjectInspector) returnInspector).getWritableConstantValue() :
-					function.evaluate(deferredObjects);
-			return HiveInspectors.toFlinkObject(returnInspector, result, hiveShim);
-		} catch (HiveException e) {
-			throw new FlinkHiveUDFException(e);
-		}
-	}
+        for (int i = 0; i < args.length; i++) {
+            ((DeferredObjectAdapter) deferredObjects[i]).set(args[i]);
+        }
 
-	@Override
-	protected DataType inferReturnType() throws UDFArgumentException {
-		LOG.info("Getting result type of HiveGenericUDF from {}", hiveFunctionWrapper.getClassName());
-		ObjectInspector[] argumentInspectors = HiveInspectors.toInspectors(hiveShim, constantArguments, argTypes);
+        try {
+            Object result =
+                    returnInspector instanceof ConstantObjectInspector
+                            ? ((ConstantObjectInspector) returnInspector).getWritableConstantValue()
+                            : function.evaluate(deferredObjects);
+            return HiveInspectors.toFlinkObject(returnInspector, result, hiveShim);
+        } catch (HiveException e) {
+            throw new FlinkHiveUDFException(e);
+        }
+    }
 
-		ObjectInspector resultObjectInspector =
-				createFunction().initializeAndFoldConstants(argumentInspectors);
+    @Override
+    public DataType inferReturnType() throws UDFArgumentException {
+        LOG.info(
+                "Getting result type of HiveGenericUDF from {}",
+                hiveFunctionWrapper.getUDFClassName());
+        ObjectInspector[] argumentInspectors = HiveInspectors.getArgInspectors(hiveShim, arguments);
 
-		return HiveTypeUtil.toFlinkType(
-				TypeInfoUtils.getTypeInfoFromObjectInspector(resultObjectInspector));
-	}
+        ObjectInspector resultObjectInspector =
+                createFunction().initializeAndFoldConstants(argumentInspectors);
 
-	private GenericUDF createFunction() {
-		function = hiveFunctionWrapper.createFunction();
-		// some UDFs may need to access SessionState HiveConf, tell them not to
-		if (function instanceof GenericUDFBaseNumeric) {
-			GenericUDFBaseNumeric baseNumeric = (GenericUDFBaseNumeric) function;
-			baseNumeric.setConfLookupNeeded(false);
-		}
-		return function;
-	}
+        return HiveTypeUtil.toFlinkType(
+                TypeInfoUtils.getTypeInfoFromObjectInspector(resultObjectInspector));
+    }
+
+    private GenericUDF createFunction() {
+        function = hiveFunctionWrapper.createFunction();
+        // some UDFs may need to access SessionState HiveConf, tell them not to
+        if (function instanceof GenericUDFBaseNumeric) {
+            GenericUDFBaseNumeric baseNumeric = (GenericUDFBaseNumeric) function;
+            baseNumeric.setConfLookupNeeded(false);
+        }
+        return function;
+    }
 }

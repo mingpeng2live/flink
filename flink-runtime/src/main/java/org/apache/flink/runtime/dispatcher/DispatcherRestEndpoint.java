@@ -24,9 +24,10 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.blob.TransientBlobService;
 import org.apache.flink.runtime.leaderelection.LeaderElectionService;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
-import org.apache.flink.runtime.rest.RestServerEndpointConfiguration;
 import org.apache.flink.runtime.rest.handler.RestHandlerConfiguration;
 import org.apache.flink.runtime.rest.handler.RestHandlerSpecification;
+import org.apache.flink.runtime.rest.handler.job.JobResourceRequirementsHandler;
+import org.apache.flink.runtime.rest.handler.job.JobResourceRequirementsUpdateHandler;
 import org.apache.flink.runtime.rest.handler.job.JobSubmitHandler;
 import org.apache.flink.runtime.rest.handler.legacy.ExecutionGraphCache;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricFetcher;
@@ -35,6 +36,7 @@ import org.apache.flink.runtime.webmonitor.WebMonitorEndpoint;
 import org.apache.flink.runtime.webmonitor.WebMonitorExtension;
 import org.apache.flink.runtime.webmonitor.WebMonitorUtils;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
+import org.apache.flink.util.ConfigurationException;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 
@@ -47,114 +49,130 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 
-/**
- * REST endpoint for the {@link Dispatcher} component.
- */
+/** REST endpoint for the {@link Dispatcher} component. */
 public class DispatcherRestEndpoint extends WebMonitorEndpoint<DispatcherGateway> {
 
-	private WebMonitorExtension webSubmissionExtension;
+    private WebMonitorExtension webSubmissionExtension;
 
-	public DispatcherRestEndpoint(
-			RestServerEndpointConfiguration endpointConfiguration,
-			GatewayRetriever<DispatcherGateway> leaderRetriever,
-			Configuration clusterConfiguration,
-			RestHandlerConfiguration restConfiguration,
-			GatewayRetriever<ResourceManagerGateway> resourceManagerRetriever,
-			TransientBlobService transientBlobService,
-			ScheduledExecutorService executor,
-			MetricFetcher metricFetcher,
-			LeaderElectionService leaderElectionService,
-			ExecutionGraphCache executionGraphCache,
-			FatalErrorHandler fatalErrorHandler) throws IOException {
+    public DispatcherRestEndpoint(
+            GatewayRetriever<DispatcherGateway> leaderRetriever,
+            Configuration clusterConfiguration,
+            RestHandlerConfiguration restConfiguration,
+            GatewayRetriever<ResourceManagerGateway> resourceManagerRetriever,
+            TransientBlobService transientBlobService,
+            ScheduledExecutorService executor,
+            MetricFetcher metricFetcher,
+            LeaderElectionService leaderElectionService,
+            ExecutionGraphCache executionGraphCache,
+            FatalErrorHandler fatalErrorHandler)
+            throws IOException, ConfigurationException {
 
-		super(
-			endpointConfiguration,
-			leaderRetriever,
-			clusterConfiguration,
-			restConfiguration,
-			resourceManagerRetriever,
-			transientBlobService,
-			executor,
-			metricFetcher,
-			leaderElectionService,
-			executionGraphCache,
-			fatalErrorHandler);
+        super(
+                leaderRetriever,
+                clusterConfiguration,
+                restConfiguration,
+                resourceManagerRetriever,
+                transientBlobService,
+                executor,
+                metricFetcher,
+                leaderElectionService,
+                executionGraphCache,
+                fatalErrorHandler);
 
-		webSubmissionExtension = WebMonitorExtension.empty();
-	}
+        webSubmissionExtension = WebMonitorExtension.empty();
+    }
 
-	@Override
-	protected List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeHandlers(final CompletableFuture<String> localAddressFuture) {
-		List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> handlers = super.initializeHandlers(localAddressFuture);
+    @Override
+    protected List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeHandlers(
+            final CompletableFuture<String> localAddressFuture) {
+        List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> handlers =
+                super.initializeHandlers(localAddressFuture);
 
-		// Add the Dispatcher specific handlers
+        // Add the Dispatcher specific handlers
 
-		final Time timeout = restConfiguration.getTimeout();
+        final Time timeout = restConfiguration.getTimeout();
 
-		JobSubmitHandler jobSubmitHandler = new JobSubmitHandler(
-			leaderRetriever,
-			timeout,
-			responseHeaders,
-			executor,
-			clusterConfiguration);
+        JobSubmitHandler jobSubmitHandler =
+                new JobSubmitHandler(
+                        leaderRetriever, timeout, responseHeaders, executor, clusterConfiguration);
 
-		handlers.add(Tuple2.of(jobSubmitHandler.getMessageHeaders(), jobSubmitHandler));
+        handlers.add(Tuple2.of(jobSubmitHandler.getMessageHeaders(), jobSubmitHandler));
 
-		return handlers;
-	}
+        final JobResourceRequirementsHandler jobResourceRequirementsHandler =
+                new JobResourceRequirementsHandler(leaderRetriever, timeout, responseHeaders);
+        handlers.add(
+                Tuple2.of(
+                        jobResourceRequirementsHandler.getMessageHeaders(),
+                        jobResourceRequirementsHandler));
 
-	@Override
-	protected Collection<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeWebSubmissionHandlers(CompletableFuture<String> localAddressFuture) {
-		if (restConfiguration.isWebSubmitEnabled()) {
-			try {
-				final Time timeout = restConfiguration.getTimeout();
+        final JobResourceRequirementsUpdateHandler jobResourceRequirementsUpdateHandler =
+                new JobResourceRequirementsUpdateHandler(leaderRetriever, timeout, responseHeaders);
+        handlers.add(
+                Tuple2.of(
+                        jobResourceRequirementsUpdateHandler.getMessageHeaders(),
+                        jobResourceRequirementsUpdateHandler));
 
-				webSubmissionExtension = WebMonitorUtils.loadWebSubmissionExtension(
-					leaderRetriever,
-					timeout,
-					responseHeaders,
-					localAddressFuture,
-					uploadDir,
-					executor,
-					clusterConfiguration);
+        return handlers;
+    }
 
-				return webSubmissionExtension.getHandlers();
-			} catch (FlinkException e) {
-				if (log.isDebugEnabled()) {
-					log.debug("Failed to load web based job submission extension.", e);
-				} else {
-					log.info("Failed to load web based job submission extension. " +
-						"Probable reason: flink-runtime-web is not in the classpath.");
-				}
-			}
-		} else {
-			log.info("Web-based job submission is not enabled.");
-		}
+    @Override
+    protected Collection<Tuple2<RestHandlerSpecification, ChannelInboundHandler>>
+            initializeWebSubmissionHandlers(CompletableFuture<String> localAddressFuture) {
+        if (restConfiguration.isWebSubmitEnabled()) {
+            try {
+                final Time timeout = restConfiguration.getTimeout();
 
-		return Collections.emptyList();
-	}
+                webSubmissionExtension =
+                        WebMonitorUtils.loadWebSubmissionExtension(
+                                leaderRetriever,
+                                timeout,
+                                responseHeaders,
+                                localAddressFuture,
+                                uploadDir,
+                                executor,
+                                clusterConfiguration);
 
-	@Override
-	protected CompletableFuture<Void> shutDownInternal() {
-		final CompletableFuture<Void> shutdownFuture = super.shutDownInternal();
+                return webSubmissionExtension.getHandlers();
+            } catch (FlinkException e) {
+                if (log.isDebugEnabled()) {
+                    log.debug("Failed to load web based job submission extension.", e);
+                } else {
+                    log.info(
+                            "Failed to load web based job submission extension. "
+                                    + "Probable reason: flink-runtime-web is not in the classpath.");
+                }
+            }
+        } else {
+            log.info("Web-based job submission is not enabled.");
+        }
 
-		final CompletableFuture<Void> shutdownResultFuture = new CompletableFuture<>();
+        return Collections.emptyList();
+    }
 
-		shutdownFuture.whenComplete(
-			(Void ignored, Throwable throwable) -> {
-				webSubmissionExtension.closeAsync().whenComplete(
-					(Void innerIgnored, Throwable innerThrowable) -> {
-						if (innerThrowable != null) {
-							shutdownResultFuture.completeExceptionally(
-								ExceptionUtils.firstOrSuppressed(innerThrowable, throwable));
-						} else if (throwable != null) {
-							shutdownResultFuture.completeExceptionally(throwable);
-						} else {
-							shutdownResultFuture.complete(null);
-						}
-					});
-			});
+    @Override
+    protected CompletableFuture<Void> shutDownInternal() {
+        final CompletableFuture<Void> shutdownFuture = super.shutDownInternal();
 
-		return shutdownResultFuture;
-	}
+        final CompletableFuture<Void> shutdownResultFuture = new CompletableFuture<>();
+
+        shutdownFuture.whenComplete(
+                (Void ignored, Throwable throwable) -> {
+                    webSubmissionExtension
+                            .closeAsync()
+                            .whenComplete(
+                                    (Void innerIgnored, Throwable innerThrowable) -> {
+                                        if (innerThrowable != null) {
+                                            shutdownResultFuture.completeExceptionally(
+                                                    ExceptionUtils.firstOrSuppressed(
+                                                            innerThrowable, throwable));
+                                        } else if (throwable != null) {
+                                            shutdownResultFuture.completeExceptionally(throwable);
+                                        } else {
+                                            shutdownResultFuture.complete(null);
+                                        }
+                                    });
+                });
+
+        return shutdownResultFuture;
+    }
 }

@@ -18,76 +18,87 @@
 
 package org.apache.flink.kubernetes.highavailability;
 
-import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesConfigMap;
 import org.apache.flink.kubernetes.utils.Constants;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.nullValue;
-import static org.junit.Assert.assertThat;
+import static org.apache.flink.core.testutils.FlinkAssertions.assertThatChainOfCauses;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for the {@link KubernetesLeaderRetrievalDriver}.
- */
-public class KubernetesLeaderRetrievalDriverTest extends KubernetesHighAvailabilityTestBase {
+/** Tests for the {@link KubernetesLeaderRetrievalDriver}. */
+class KubernetesLeaderRetrievalDriverTest extends KubernetesHighAvailabilityTestBase {
 
-	@Test
-	public void testErrorForwarding() throws Exception {
-		new Context() {{
-			runTest(
-				() -> {
-					leaderCallbackGrantLeadership();
+    @Test
+    void testErrorForwarding() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            leaderCallbackGrantLeadership();
 
-					final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap> callbackHandler =
-						getLeaderRetrievalConfigMapCallback();
-					callbackHandler.onError(Collections.singletonList(getLeaderConfigMap()));
-					final String errMsg = "Error while watching the ConfigMap " + LEADER_CONFIGMAP_NAME;
-					retrievalEventHandler.waitForError(TIMEOUT);
-					assertThat(retrievalEventHandler.getError(), FlinkMatchers.containsMessage(errMsg));
-				});
-		}};
-	}
+                            final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap>
+                                    callbackHandler = getLeaderRetrievalConfigMapCallback();
+                            callbackHandler.onError(
+                                    Collections.singletonList(getLeaderConfigMap()));
+                            final String errMsg =
+                                    "Error while watching the ConfigMap " + LEADER_CONFIGMAP_NAME;
+                            retrievalEventHandler.waitForError();
+                            assertThatChainOfCauses(retrievalEventHandler.getError())
+                                    .anySatisfy(t -> assertThat(t).hasMessageContaining(errMsg));
+                        });
+            }
+        };
+    }
 
-	@Test
-	public void testKubernetesLeaderRetrievalOnModified() throws Exception {
-		new Context() {{
-			runTest(
-				() -> {
-					leaderCallbackGrantLeadership();
+    @Test
+    void testKubernetesLeaderRetrievalOnModified() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            leaderCallbackGrantLeadership();
 
-					final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap> callbackHandler =
-						getLeaderRetrievalConfigMapCallback();
+                            final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap>
+                                    callbackHandler = getLeaderRetrievalConfigMapCallback();
 
-					// Leader changed
-					final String newLeader = LEADER_URL + "_" + 2;
-					getLeaderConfigMap().getData().put(Constants.LEADER_ADDRESS_KEY, newLeader);
-					callbackHandler.onModified(Collections.singletonList(getLeaderConfigMap()));
+                            // Leader changed
+                            final String newLeader = LEADER_ADDRESS + "_" + 2;
+                            getLeaderConfigMap()
+                                    .getData()
+                                    .put(Constants.LEADER_ADDRESS_KEY, newLeader);
+                            callbackHandler.onModified(
+                                    Collections.singletonList(getLeaderConfigMap()));
 
-					assertThat(retrievalEventHandler.waitForNewLeader(TIMEOUT), is(newLeader));
-				});
-		}};
-	}
+                            assertThat(retrievalEventHandler.waitForNewLeader())
+                                    .isEqualTo(newLeader);
+                        });
+            }
+        };
+    }
 
-	@Test
-	public void testKubernetesLeaderRetrievalOnModifiedWithEmpty() throws Exception {
-		new Context() {{
-			runTest(
-				() -> {
-					leaderCallbackGrantLeadership();
+    @Test
+    void testKubernetesLeaderRetrievalOnModifiedWithEmpty() throws Exception {
+        new Context() {
+            {
+                runTest(
+                        () -> {
+                            leaderCallbackGrantLeadership();
 
-					final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap> callbackHandler =
-						getLeaderRetrievalConfigMapCallback();
+                            final FlinkKubeClient.WatchCallbackHandler<KubernetesConfigMap>
+                                    callbackHandler = getLeaderRetrievalConfigMapCallback();
 
-					// Leader information is cleared
-					getLeaderConfigMap().getData().clear();
-					callbackHandler.onModified(Collections.singletonList(getLeaderConfigMap()));
-					assertThat(retrievalEventHandler.getAddress(), is(nullValue()));
-				});
-		}};
-	}
+                            // Leader information is cleared
+                            getLeaderConfigMap().getData().clear();
+                            callbackHandler.onModified(
+                                    Collections.singletonList(getLeaderConfigMap()));
+                            retrievalEventHandler.waitForEmptyLeaderInformation();
+                            assertThat(retrievalEventHandler.getAddress()).isNull();
+                        });
+            }
+        };
+    }
 }

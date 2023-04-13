@@ -23,77 +23,121 @@ import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
+import java.util.UUID;
 import java.util.function.Consumer;
 
 /**
- * {@link LeaderElectionEventHandler} implementation which provides some convenience functions for testing
- * purposes.
+ * {@link LeaderElectionEventHandler} implementation which provides some convenience functions for
+ * testing purposes.
  */
-public class TestingLeaderElectionEventHandler extends TestingLeaderBase implements LeaderElectionEventHandler {
+public class TestingLeaderElectionEventHandler extends TestingLeaderBase
+        implements LeaderElectionEventHandler {
 
-	private final LeaderInformation leaderInformation;
+    private final Object lock = new Object();
 
-	private final OneShotLatch initializationLatch;
+    private final String leaderAddress;
 
-	@Nullable
-	private LeaderElectionDriver initializedLeaderElectionDriver = null;
+    private final OneShotLatch initializationLatch;
 
-	private LeaderInformation confirmedLeaderInformation = LeaderInformation.empty();
+    private final Consumer<LeaderInformation> leaderInformationConsumer;
 
-	public TestingLeaderElectionEventHandler(LeaderInformation leaderInformation) {
-		this.leaderInformation = leaderInformation;
-		this.initializationLatch = new OneShotLatch();
-	}
+    @Nullable private LeaderElectionDriver initializedLeaderElectionDriver = null;
 
-	public void init(LeaderElectionDriver leaderElectionDriver) {
-		Preconditions.checkState(initializedLeaderElectionDriver == null);
-		this.initializedLeaderElectionDriver = leaderElectionDriver;
-		initializationLatch.trigger();
-	}
+    private LeaderInformation confirmedLeaderInformation = LeaderInformation.empty();
 
-	@Override
-	public void onGrantLeadership() {
-		waitForInitialization(
-			leaderElectionDriver -> {
-				confirmedLeaderInformation = leaderInformation;
-				leaderElectionDriver.writeLeaderInformation(confirmedLeaderInformation);
-				leaderEventQueue.offer(confirmedLeaderInformation);
-			});
-	}
+    private boolean running = true;
 
-	@Override
-	public void onRevokeLeadership() {
-		waitForInitialization(
-			(leaderElectionDriver) -> {
-				confirmedLeaderInformation = LeaderInformation.empty();
-				leaderElectionDriver.writeLeaderInformation(confirmedLeaderInformation);
-				leaderEventQueue.offer(confirmedLeaderInformation);
-			});
-	}
+    public TestingLeaderElectionEventHandler(String leaderAddress) {
+        this.leaderAddress = leaderAddress;
+        this.initializationLatch = new OneShotLatch();
+        this.leaderInformationConsumer = (ignore) -> {};
+    }
 
-	@Override
-	public void onLeaderInformationChange(LeaderInformation leaderInformation) {
-		waitForInitialization(
-			leaderElectionDriver -> {
-				if (confirmedLeaderInformation.getLeaderSessionID() != null &&
-					!this.confirmedLeaderInformation.equals(leaderInformation)) {
-					leaderElectionDriver.writeLeaderInformation(confirmedLeaderInformation);
-				}
-			});
-	}
+    public TestingLeaderElectionEventHandler(
+            String leaderAddress, Consumer<LeaderInformation> leaderInformationConsumer) {
+        this.leaderAddress = leaderAddress;
+        this.initializationLatch = new OneShotLatch();
+        this.leaderInformationConsumer = leaderInformationConsumer;
+    }
 
-	private void waitForInitialization(Consumer<? super LeaderElectionDriver> operation) {
-		try {
-			initializationLatch.await();
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
+    public void init(LeaderElectionDriver leaderElectionDriver) {
+        Preconditions.checkState(initializedLeaderElectionDriver == null);
+        this.initializedLeaderElectionDriver = leaderElectionDriver;
+        initializationLatch.trigger();
+    }
 
-		Preconditions.checkState(initializedLeaderElectionDriver != null);
-		operation.accept(initializedLeaderElectionDriver);
-	}
+    private void ifRunning(Runnable action) {
+        synchronized (lock) {
+            if (running) {
+                action.run();
+            }
+        }
+    }
 
-	public LeaderInformation getConfirmedLeaderInformation() {
-		return confirmedLeaderInformation;
-	}
+    @Override
+    public void onGrantLeadership(UUID newLeaderSessionId) {
+        ifRunning(
+                () ->
+                        waitForInitialization(
+                                leaderElectionDriver -> {
+                                    confirmedLeaderInformation =
+                                            LeaderInformation.known(
+                                                    newLeaderSessionId, leaderAddress);
+                                    leaderElectionDriver.writeLeaderInformation(
+                                            confirmedLeaderInformation);
+                                    leaderEventQueue.offer(confirmedLeaderInformation);
+                                }));
+    }
+
+    @Override
+    public void onRevokeLeadership() {
+        ifRunning(
+                () ->
+                        waitForInitialization(
+                                (leaderElectionDriver) -> {
+                                    confirmedLeaderInformation = LeaderInformation.empty();
+                                    leaderElectionDriver.writeLeaderInformation(
+                                            confirmedLeaderInformation);
+                                    leaderEventQueue.offer(confirmedLeaderInformation);
+                                }));
+    }
+
+    @Override
+    public void onLeaderInformationChange(LeaderInformation leaderInformation) {
+        ifRunning(
+                () ->
+                        waitForInitialization(
+                                leaderElectionDriver -> {
+                                    leaderInformationConsumer.accept(leaderInformation);
+                                    if (confirmedLeaderInformation.getLeaderSessionID() != null
+                                            && !this.confirmedLeaderInformation.equals(
+                                                    leaderInformation)) {
+                                        leaderElectionDriver.writeLeaderInformation(
+                                                confirmedLeaderInformation);
+                                    }
+                                }));
+    }
+
+    private void waitForInitialization(Consumer<? super LeaderElectionDriver> operation) {
+        try {
+            initializationLatch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        Preconditions.checkState(initializedLeaderElectionDriver != null);
+        operation.accept(initializedLeaderElectionDriver);
+    }
+
+    public LeaderInformation getConfirmedLeaderInformation() {
+        synchronized (lock) {
+            return confirmedLeaderInformation;
+        }
+    }
+
+    public void close() {
+        synchronized (lock) {
+            running = false;
+        }
+    }
 }

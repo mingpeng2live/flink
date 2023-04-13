@@ -20,32 +20,36 @@ package org.apache.flink.streaming.api.functions.sink.filesystem;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.Encoder;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.RecoverableFsDataOutputStream;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 
 /**
- * A {@link InProgressFileWriter} for row-wise formats that use an {@link Encoder}.
- * This also implements the {@link PartFileInfo}.
+ * A {@link InProgressFileWriter} for row-wise formats that use an {@link Encoder}. This also
+ * implements the {@link PartFileInfo} and the {@link OutputStreamBasedCompactingFileWriter}.
  */
 @Internal
-final class RowWisePartWriter<IN, BucketID> extends OutputStreamBasedPartFileWriter<IN, BucketID> {
+public final class RowWisePartWriter<IN, BucketID>
+        extends OutputStreamBasedPartFileWriter<IN, BucketID> {
 
-	private final Encoder<IN> encoder;
+    private final Encoder<IN> encoder;
 
-	RowWisePartWriter(
-			final BucketID bucketId,
-			final RecoverableFsDataOutputStream currentPartStream,
-			final Encoder<IN> encoder,
-			final long creationTime) {
-		super(bucketId, currentPartStream, creationTime);
-		this.encoder = Preconditions.checkNotNull(encoder);
-	}
+    public RowWisePartWriter(
+            final BucketID bucketId,
+            final Path path,
+            final RecoverableFsDataOutputStream currentPartStream,
+            final Encoder<IN> encoder,
+            final long creationTime) {
+        super(bucketId, path, currentPartStream, creationTime);
+        this.encoder = Preconditions.checkNotNull(encoder);
+    }
 
-	@Override
-	public void write(final IN element, final long currentTime) throws IOException {
-		encoder.encode(element, currentPartStream);
-		markWrite(currentTime);
-	}
+    @Override
+    public void write(final IN element, final long currentTime) throws IOException {
+        ensureWriteType(Type.RECORD_WISE);
+        encoder.encode(element, currentPartStream);
+        markWrite(currentTime);
+    }
 }
