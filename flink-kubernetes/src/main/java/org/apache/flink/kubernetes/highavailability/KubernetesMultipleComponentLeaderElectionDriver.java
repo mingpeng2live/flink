@@ -28,7 +28,7 @@ import org.apache.flink.kubernetes.kubeclient.resources.KubernetesLeaderElector;
 import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.leaderelection.LeaderElectionException;
 import org.apache.flink.runtime.leaderelection.LeaderInformation;
-import org.apache.flink.runtime.leaderelection.LeaderInformationWithComponentId;
+import org.apache.flink.runtime.leaderelection.LeaderInformationRegister;
 import org.apache.flink.runtime.leaderelection.MultipleComponentLeaderElectionDriver;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.util.Preconditions;
@@ -36,8 +36,7 @@ import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -46,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import static org.apache.flink.kubernetes.utils.Constants.LABEL_CONFIGMAP_TYPE_HIGH_AVAILABILITY;
-import static org.apache.flink.kubernetes.utils.KubernetesUtils.checkConfigMaps;
+import static org.apache.flink.kubernetes.utils.KubernetesUtils.getOnlyConfigMap;
 
 /** {@link MultipleComponentLeaderElectionDriver} for Kubernetes. */
 public class KubernetesMultipleComponentLeaderElectionDriver
@@ -185,12 +184,11 @@ public class KubernetesMultipleComponentLeaderElectionDriver
         };
     }
 
-    private static Collection<LeaderInformationWithComponentId> extractLeaderInformation(
+    private static LeaderInformationRegister extractLeaderInformation(
             KubernetesConfigMap configMap) {
         final Map<String, String> data = configMap.getData();
 
-        final Collection<LeaderInformationWithComponentId> leaderInformationWithLeaderNames =
-                new ArrayList<>();
+        final Map<String, LeaderInformation> extractedLeaderInformation = new HashMap<>();
 
         for (Map.Entry<String, String> keyValuePair : data.entrySet()) {
             final String key = keyValuePair.getKey();
@@ -199,12 +197,11 @@ public class KubernetesMultipleComponentLeaderElectionDriver
                 final LeaderInformation leaderInformation =
                         KubernetesUtils.parseLeaderInformationSafely(keyValuePair.getValue())
                                 .orElse(LeaderInformation.empty());
-                leaderInformationWithLeaderNames.add(
-                        LeaderInformationWithComponentId.create(leaderName, leaderInformation));
+                extractedLeaderInformation.put(leaderName, leaderInformation);
             }
         }
 
-        return leaderInformationWithLeaderNames;
+        return new LeaderInformationRegister(extractedLeaderInformation);
     }
 
     private class LeaderCallbackHandlerImpl extends KubernetesLeaderElector.LeaderCallbackHandler {
@@ -229,20 +226,17 @@ public class KubernetesMultipleComponentLeaderElectionDriver
 
         @Override
         public void onModified(List<KubernetesConfigMap> configMaps) {
-            final KubernetesConfigMap configMap = checkConfigMaps(configMaps, configMapName);
+            final KubernetesConfigMap configMap = getOnlyConfigMap(configMaps, configMapName);
 
             if (KubernetesLeaderElector.hasLeadership(configMap, lockIdentity)) {
-                Collection<LeaderInformationWithComponentId> leaderInformationWithLeaderNames =
-                        extractLeaderInformation(configMap);
-
                 leaderElectionListener.notifyAllKnownLeaderInformation(
-                        leaderInformationWithLeaderNames);
+                        extractLeaderInformation(configMap));
             }
         }
 
         @Override
         public void onDeleted(List<KubernetesConfigMap> configMaps) {
-            final KubernetesConfigMap configMap = checkConfigMaps(configMaps, configMapName);
+            final KubernetesConfigMap configMap = getOnlyConfigMap(configMaps, configMapName);
             if (KubernetesLeaderElector.hasLeadership(configMap, lockIdentity)) {
                 fatalErrorHandler.onFatalError(
                         new LeaderElectionException(
@@ -254,7 +248,7 @@ public class KubernetesMultipleComponentLeaderElectionDriver
 
         @Override
         public void onError(List<KubernetesConfigMap> configMaps) {
-            final KubernetesConfigMap configMap = checkConfigMaps(configMaps, configMapName);
+            final KubernetesConfigMap configMap = getOnlyConfigMap(configMaps, configMapName);
             if (KubernetesLeaderElector.hasLeadership(configMap, lockIdentity)) {
                 fatalErrorHandler.onFatalError(
                         new LeaderElectionException(

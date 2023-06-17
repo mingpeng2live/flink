@@ -256,6 +256,9 @@ public class ZooKeeperUtils {
 
         LOG.info("Using '{}' as Zookeeper namespace.", rootWithNamespace);
 
+        boolean ensembleTracking =
+                configuration.getBoolean(HighAvailabilityOptions.ZOOKEEPER_ENSEMBLE_TRACKING);
+
         final CuratorFrameworkFactory.Builder curatorFrameworkBuilder =
                 CuratorFrameworkFactory.builder()
                         .connectString(zkQuorum)
@@ -265,6 +268,7 @@ public class ZooKeeperUtils {
                         // Curator prepends a '/' manually and throws an Exception if the
                         // namespace starts with a '/'.
                         .namespace(trimStartingSlash(rootWithNamespace))
+                        .ensembleTracker(ensembleTracking)
                         .aclProvider(aclProvider);
 
         if (configuration.get(HighAvailabilityOptions.ZOOKEEPER_TOLERATE_SUSPENDED_CONNECTIONS)) {
@@ -399,8 +403,8 @@ public class ZooKeeperUtils {
      * @param client The {@link CuratorFramework} ZooKeeper client to use
      * @return {@link DefaultLeaderElectionService} instance.
      */
-    public static DefaultLeaderElectionService createLeaderElectionService(
-            CuratorFramework client) {
+    public static DefaultLeaderElectionService createLeaderElectionService(CuratorFramework client)
+            throws Exception {
 
         return createLeaderElectionService(client, "");
     }
@@ -414,8 +418,12 @@ public class ZooKeeperUtils {
      * @return {@link DefaultLeaderElectionService} instance.
      */
     public static DefaultLeaderElectionService createLeaderElectionService(
-            final CuratorFramework client, final String path) {
-        return new DefaultLeaderElectionService(createLeaderElectionDriverFactory(client, path));
+            final CuratorFramework client, final String path) throws Exception {
+        final DefaultLeaderElectionService leaderElectionService =
+                new DefaultLeaderElectionService(createLeaderElectionDriverFactory(client, path));
+        leaderElectionService.startLeaderElectionBackend();
+
+        return leaderElectionService;
     }
 
     /**
@@ -749,16 +757,26 @@ public class ZooKeeperUtils {
             final String pathToNode,
             final RunnableWithException nodeChangeCallback) {
         final TreeCache cache =
-                TreeCache.newBuilder(client, pathToNode)
-                        .setCacheData(true)
-                        .setCreateParentNodes(false)
-                        .setSelector(ZooKeeperUtils.treeCacheSelectorForPath(pathToNode))
-                        .setExecutor(Executors.newDirectExecutorService())
-                        .build();
+                createTreeCache(
+                        client, pathToNode, ZooKeeperUtils.treeCacheSelectorForPath(pathToNode));
 
         cache.getListenable().addListener(createTreeCacheListener(nodeChangeCallback));
 
         return cache;
+    }
+
+    public static TreeCache createTreeCache(
+            final CuratorFramework client,
+            final String pathToNode,
+            final TreeCacheSelector selector) {
+        return TreeCache.newBuilder(client, pathToNode)
+                .setCacheData(true)
+                .setCreateParentNodes(false)
+                .setSelector(selector)
+                // see FLINK-32204 for further details on why the task rejection shouldn't
+                // be enforced here
+                .setExecutor(Executors.newDirectExecutorServiceWithNoOpShutdown())
+                .build();
     }
 
     @VisibleForTesting

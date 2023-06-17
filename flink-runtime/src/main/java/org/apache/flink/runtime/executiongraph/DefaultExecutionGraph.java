@@ -43,7 +43,6 @@ import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.DefaultCheckpointPlanCalculator;
-import org.apache.flink.runtime.checkpoint.ExecutionAttemptMappingProvider;
 import org.apache.flink.runtime.checkpoint.MasterTriggerRestoreHook;
 import org.apache.flink.runtime.checkpoint.OperatorCoordinatorCheckpointContext;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
@@ -80,7 +79,6 @@ import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.StateBackendLoader;
 import org.apache.flink.runtime.taskmanager.DispatcherThreadFactory;
-import org.apache.flink.types.Either;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.IterableUtils;
@@ -135,9 +133,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
     /** Job specific information like the job id, job name, job configuration, etc. */
     private final JobInformation jobInformation;
-
-    /** Serialized job information or a blob key pointing to the offloaded job information. */
-    private final Either<SerializedValue<JobInformation>, PermanentBlobKey> jobInformationOrBlobKey;
 
     /** The executor which is used to execute futures. */
     private final ScheduledExecutorService futureExecutor;
@@ -207,9 +202,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     private final Counter numberOfRestartsCounter = new SimpleCounter();
 
     // ------ Configuration of the Execution -------
-
-    private final TaskDeploymentDescriptorFactory.PartitionLocationConstraint
-            partitionLocationConstraint;
 
     /** The maximum number of historical execution attempts kept in history. */
     private final int executionHistorySizeLimit;
@@ -299,7 +291,7 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
     private final MarkPartitionFinishedStrategy markPartitionFinishedStrategy;
 
-    private final boolean nonFinishedHybridPartitionShouldBeUnknown;
+    private final TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory;
 
     // --------------------------------------------------------------------------------------------
     //   Constructors
@@ -316,7 +308,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
             PartitionGroupReleaseStrategy.Factory partitionGroupReleaseStrategyFactory,
             ShuffleMaster<?> shuffleMaster,
             JobMasterPartitionTracker partitionTracker,
-            TaskDeploymentDescriptorFactory.PartitionLocationConstraint partitionLocationConstraint,
             ExecutionDeploymentListener executionDeploymentListener,
             ExecutionStateUpdateListener executionStateUpdateListener,
             long initializationTimestamp,
@@ -326,20 +317,13 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
             ExecutionJobVertex.Factory executionJobVertexFactory,
             List<JobStatusHook> jobStatusHooks,
             MarkPartitionFinishedStrategy markPartitionFinishedStrategy,
-            boolean nonFinishedHybridPartitionShouldBeUnknown)
-            throws IOException {
+            TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory) {
 
         this.executionGraphId = new ExecutionGraphID();
 
         this.jobInformation = checkNotNull(jobInformation);
 
         this.blobWriter = checkNotNull(blobWriter);
-
-        this.partitionLocationConstraint = checkNotNull(partitionLocationConstraint);
-
-        this.jobInformationOrBlobKey =
-                BlobWriter.serializeAndTryOffload(
-                        jobInformation, jobInformation.getJobId(), blobWriter);
 
         this.futureExecutor = checkNotNull(futureExecutor);
         this.ioExecutor = checkNotNull(ioExecutor);
@@ -401,7 +385,7 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
         this.markPartitionFinishedStrategy = markPartitionFinishedStrategy;
 
-        this.nonFinishedHybridPartitionShouldBeUnknown = nonFinishedHybridPartitionShouldBeUnknown;
+        this.taskDeploymentDescriptorFactory = checkNotNull(taskDeploymentDescriptorFactory);
 
         LOG.info(
                 "Created execution graph {} for job {}.",
@@ -423,12 +407,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     @Override
     public SchedulingTopology getSchedulingTopology() {
         return executionTopology;
-    }
-
-    @Override
-    public TaskDeploymentDescriptorFactory.PartitionLocationConstraint
-            getPartitionLocationConstraint() {
-        return partitionLocationConstraint;
     }
 
     @Override
@@ -521,7 +499,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
                         failureManager,
                         createCheckpointPlanCalculator(
                                 chkConfig.isEnableCheckpointsAfterTasksFinish()),
-                        new ExecutionAttemptMappingProvider(getAllExecutionVertices()),
                         checkpointStatsTracker);
 
         // register the master hooks on the checkpoint coordinator
@@ -608,11 +585,6 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     @Override
     public String getJsonPlan() {
         return jsonPlan;
-    }
-
-    @Override
-    public Either<SerializedValue<JobInformation>, PermanentBlobKey> getJobInformationOrBlobKey() {
-        return jobInformationOrBlobKey;
     }
 
     @Override
@@ -1733,13 +1705,13 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     }
 
     @Override
-    public boolean isNonFinishedHybridPartitionShouldBeUnknown() {
-        return nonFinishedHybridPartitionShouldBeUnknown;
-    }
-
-    @Override
     public JobVertexInputInfo getJobVertexInputInfo(
             JobVertexID jobVertexId, IntermediateDataSetID resultId) {
         return vertexInputInfoStore.get(jobVertexId, resultId);
+    }
+
+    @Override
+    public TaskDeploymentDescriptorFactory getTaskDeploymentDescriptorFactory() {
+        return taskDeploymentDescriptorFactory;
     }
 }

@@ -34,6 +34,13 @@
 
 	<packaging>jar</packaging>
 
+	<properties>
+		<surefire.module.config><!--
+			CommonTestUtils#setEnv
+			-->--add-opens=java.base/java.util=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
@@ -69,6 +76,18 @@
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-table-planner_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-files</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-csv</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>

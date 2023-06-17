@@ -59,7 +59,6 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.delegation.Executor;
 import org.apache.flink.table.delegation.ExecutorFactory;
-import org.apache.flink.table.delegation.ExtendedOperationExecutor;
 import org.apache.flink.table.delegation.InternalPlan;
 import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.table.delegation.Planner;
@@ -807,16 +806,7 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
 
         List<Transformation<?>> transformations = translate(mapOperations);
         List<String> sinkIdentifierNames = extractSinkIdentifierNames(mapOperations);
-        TableResultInternal result = executeInternal(transformations, sinkIdentifierNames);
-        if (tableConfig.get(TABLE_DML_SYNC)) {
-            try {
-                result.await();
-            } catch (InterruptedException | ExecutionException e) {
-                result.getJobClient().ifPresent(JobClient::cancel);
-                throw new TableException("Fail to wait execution finish.", e);
-            }
-        }
-        return result;
+        return executeInternal(transformations, sinkIdentifierNames);
     }
 
     private TableResultInternal executeInternal(
@@ -825,9 +815,9 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
                 deleteFromFilterOperation.getSupportsDeletePushDownSink().executeDeletion();
         if (rows.isPresent()) {
             return TableResultImpl.builder()
-                    .resultKind(ResultKind.SUCCESS)
-                    .schema(ResolvedSchema.of(Column.physical("result", DataTypes.STRING())))
-                    .data(Arrays.asList(Row.of(String.valueOf(rows.get())), Row.of("OK")))
+                    .resultKind(ResultKind.SUCCESS_WITH_CONTENT)
+                    .schema(ResolvedSchema.of(Column.physical("rows affected", DataTypes.BIGINT())))
+                    .data(Collections.singletonList(Row.of(rows.get())))
                     .build();
         } else {
             return TableResultImpl.TABLE_RESULT_OK;
@@ -854,13 +844,24 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
                 affectedRowCounts[i] = -1L;
             }
 
-            return TableResultImpl.builder()
-                    .jobClient(jobClient)
-                    .resultKind(ResultKind.SUCCESS_WITH_CONTENT)
-                    .schema(ResolvedSchema.of(columns))
-                    .resultProvider(
-                            new InsertResultProvider(affectedRowCounts).setJobClient(jobClient))
-                    .build();
+            TableResultInternal result =
+                    TableResultImpl.builder()
+                            .jobClient(jobClient)
+                            .resultKind(ResultKind.SUCCESS_WITH_CONTENT)
+                            .schema(ResolvedSchema.of(columns))
+                            .resultProvider(
+                                    new InsertResultProvider(affectedRowCounts)
+                                            .setJobClient(jobClient))
+                            .build();
+            if (tableConfig.get(TABLE_DML_SYNC)) {
+                try {
+                    result.await();
+                } catch (InterruptedException | ExecutionException e) {
+                    result.getJobClient().ifPresent(JobClient::cancel);
+                    throw new TableException("Fail to wait execution finish.", e);
+                }
+            }
+            return result;
         } catch (Exception e) {
             throw new TableException("Failed to execute sql", e);
         }
@@ -904,14 +905,6 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
 
     @Override
     public TableResultInternal executeInternal(Operation operation) {
-        // try to use extended operation executor to execute the operation
-        Optional<TableResultInternal> tableResult =
-                getExtendedOperationExecutor().executeOperation(operation);
-        // if the extended operation executor return non-empty result, return it
-        if (tableResult.isPresent()) {
-            return tableResult.get();
-        }
-
         // delegate execution to Operation if it implements ExecutableOperation
         if (operation instanceof ExecutableOperation) {
             return ((ExecutableOperation) operation).execute(operationCtx);
@@ -1055,10 +1048,6 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
         return getPlanner().getParser();
     }
 
-    public ExtendedOperationExecutor getExtendedOperationExecutor() {
-        return getPlanner().getExtendedOperationExecutor();
-    }
-
     @Override
     public CatalogManager getCatalogManager() {
         return catalogManager;
@@ -1196,6 +1185,6 @@ public class TableEnvironmentImpl implements TableEnvironmentInternal {
             SinkModifyOperation sinkModifyOperation = (SinkModifyOperation) operation;
             return sinkModifyOperation.isDelete() || sinkModifyOperation.isUpdate();
         }
-        return true;
+        return false;
     }
 }
