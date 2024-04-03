@@ -24,36 +24,72 @@ import java.util.UUID;
 
 /**
  * {@code DefaultLeaderElection} implements the {@link LeaderElection} based on the {@link
- * AbstractLeaderElectionService}.
+ * ParentService}.
  */
 class DefaultLeaderElection implements LeaderElection {
 
-    private final AbstractLeaderElectionService parentService;
-    private final String contenderID;
+    private final ParentService parentService;
+    private final String componentId;
 
-    DefaultLeaderElection(AbstractLeaderElectionService parentService, String contenderID) {
+    DefaultLeaderElection(ParentService parentService, String componentId) {
         this.parentService = parentService;
-        this.contenderID = contenderID;
+        this.componentId = componentId;
     }
 
     @Override
     public void startLeaderElection(LeaderContender contender) throws Exception {
         Preconditions.checkNotNull(contender);
-        parentService.register(contenderID, contender);
+        parentService.register(componentId, contender);
     }
 
     @Override
     public void confirmLeadership(UUID leaderSessionID, String leaderAddress) {
-        parentService.confirmLeadership(contenderID, leaderSessionID, leaderAddress);
+        parentService.confirmLeadership(componentId, leaderSessionID, leaderAddress);
     }
 
     @Override
     public boolean hasLeadership(UUID leaderSessionId) {
-        return parentService.hasLeadership(contenderID, leaderSessionId);
+        return parentService.hasLeadership(componentId, leaderSessionId);
     }
 
     @Override
     public void close() throws Exception {
-        parentService.remove(contenderID);
+        parentService.remove(componentId);
+    }
+
+    /**
+     * {@link ParentService} defines the protocol between any implementing class and {@code
+     * DefaultLeaderElection}.
+     */
+    abstract static class ParentService {
+
+        /**
+         * Registers the {@link LeaderContender} under the {@code componentId} with the underlying
+         * {@code ParentService}. Leadership changes are starting to be reported to the {@code
+         * LeaderContender}.
+         */
+        abstract void register(String componentId, LeaderContender contender) throws Exception;
+
+        /**
+         * Removes the {@code LeaderContender} from the {@code ParentService} that is associated
+         * with the {@code componentId}.
+         */
+        abstract void remove(String componentId) throws Exception;
+
+        /**
+         * Confirms the leadership with the {@code leaderSessionID} and {@code leaderAddress} for
+         * the {@link LeaderContender} that is associated with the {@code componentId}.
+         */
+        abstract void confirmLeadership(
+                String componentId, UUID leaderSessionID, String leaderAddress);
+
+        /**
+         * Checks whether the {@code ParentService} has the leadership acquired for the {@code
+         * componentId} and {@code leaderSessionID}.
+         *
+         * @return {@code true} if the service has leadership with the passed {@code
+         *     leaderSessionID} acquired; {@code false} otherwise.
+         */
+        abstract boolean hasLeadership(String componentId, UUID leaderSessionID);
     }
 }

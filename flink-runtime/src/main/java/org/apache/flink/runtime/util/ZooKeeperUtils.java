@@ -20,10 +20,12 @@ package org.apache.flink.runtime.util;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.SecurityOptions;
+import org.apache.flink.core.execution.RestoreMode;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.DefaultCompletedCheckpointStore;
@@ -34,17 +36,12 @@ import org.apache.flink.runtime.checkpoint.ZooKeeperCheckpointStoreUtil;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
 import org.apache.flink.runtime.highavailability.zookeeper.CuratorFrameworkWithUnhandledErrorListener;
 import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.jobgraph.RestoreMode;
 import org.apache.flink.runtime.jobmanager.DefaultJobGraphStore;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.apache.flink.runtime.jobmanager.JobGraphStore;
 import org.apache.flink.runtime.jobmanager.ZooKeeperJobGraphStoreUtil;
 import org.apache.flink.runtime.jobmanager.ZooKeeperJobGraphStoreWatcher;
-import org.apache.flink.runtime.leaderelection.DefaultLeaderElectionService;
-import org.apache.flink.runtime.leaderelection.LeaderElectionDriverFactory;
 import org.apache.flink.runtime.leaderelection.LeaderInformation;
-import org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionDriver;
-import org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionDriverFactory;
 import org.apache.flink.runtime.leaderretrieval.DefaultLeaderRetrievalService;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalDriverFactory;
 import org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalDriver;
@@ -57,6 +54,7 @@ import org.apache.flink.runtime.zookeeper.ZooKeeperStateHandleStore;
 import org.apache.flink.util.concurrent.Executors;
 import org.apache.flink.util.function.RunnableWithException;
 
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.AuthInfo;
 import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFramework;
 import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.flink.shaded.curator5.org.apache.curator.framework.api.ACLProvider;
@@ -78,8 +76,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nonnull;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -89,6 +85,7 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
@@ -107,39 +104,19 @@ public class ZooKeeperUtils {
     /** The prefix of the completed checkpoint file. */
     public static final String HA_STORAGE_COMPLETED_CHECKPOINT = "completedCheckpoint";
 
-    private static final String RESOURCE_MANAGER_LEADER = "resource_manager";
+    /** The prefix of the resource manager node. */
+    public static final String RESOURCE_MANAGER_NODE = "resource_manager";
 
-    private static final String DISPATCHER_LEADER = "dispatcher";
+    private static final String DISPATCHER_NODE = "dispatcher";
 
     private static final String LEADER_NODE = "leader";
 
-    private static final String REST_SERVER_LEADER = "rest_server";
+    private static final String REST_SERVER_NODE = "rest_server";
 
     private static final String LEADER_LATCH_NODE = "latch";
 
-    public static final String CONNECTION_INFO_NODE = "connection_info";
+    private static final String CONNECTION_INFO_NODE = "connection_info";
 
-    public static String getLeaderPathForResourceManager() {
-        return getLeaderPath(RESOURCE_MANAGER_LEADER);
-    }
-
-    public static String getLeaderPathForDispatcher() {
-        return getLeaderPath(DISPATCHER_LEADER);
-    }
-
-    public static String getLeaderPathForRestServer() {
-        return getLeaderPath(REST_SERVER_LEADER);
-    }
-
-    public static String getLeaderPathForJobManager(JobID jobId) {
-        return generateZookeeperPath(getLeaderPathForJob(jobId), LEADER_NODE);
-    }
-
-    public static String getSingleLeaderElectionPathForJobManager(JobID jobID) {
-        return getLeaderPath(jobID.toString());
-    }
-
-    @Nonnull
     public static String getLeaderPathForJob(JobID jobId) {
         return generateZookeeperPath(getJobsPath(), getPathForJob(jobId));
     }
@@ -161,28 +138,31 @@ public class ZooKeeperUtils {
     }
 
     public static String getDispatcherNode() {
-        return DISPATCHER_LEADER;
+        return DISPATCHER_NODE;
     }
 
     public static String getResourceManagerNode() {
-        return RESOURCE_MANAGER_LEADER;
+        return RESOURCE_MANAGER_NODE;
     }
 
     public static String getRestServerNode() {
-        return REST_SERVER_LEADER;
+        return REST_SERVER_NODE;
     }
 
     public static String getLeaderLatchPath() {
         return generateZookeeperPath(LEADER_LATCH_NODE);
     }
 
-    private static String getLeaderPath(String suffix) {
+    public static String getLeaderPath(String suffix) {
         return generateZookeeperPath(LEADER_NODE, suffix);
     }
 
-    @Nonnull
     public static String generateConnectionInformationPath(String path) {
         return generateZookeeperPath(path, CONNECTION_INFO_NODE);
+    }
+
+    public static boolean isConnectionInfoPath(String path) {
+        return path.endsWith(CONNECTION_INFO_NODE);
     }
 
     public static String generateLeaderLatchPath(String path) {
@@ -210,23 +190,21 @@ public class ZooKeeperUtils {
                             + "'.");
         }
 
-        int sessionTimeout =
-                configuration.getInteger(HighAvailabilityOptions.ZOOKEEPER_SESSION_TIMEOUT);
+        int sessionTimeout = configuration.get(HighAvailabilityOptions.ZOOKEEPER_SESSION_TIMEOUT);
 
         int connectionTimeout =
-                configuration.getInteger(HighAvailabilityOptions.ZOOKEEPER_CONNECTION_TIMEOUT);
+                configuration.get(HighAvailabilityOptions.ZOOKEEPER_CONNECTION_TIMEOUT);
 
-        int retryWait = configuration.getInteger(HighAvailabilityOptions.ZOOKEEPER_RETRY_WAIT);
+        int retryWait = configuration.get(HighAvailabilityOptions.ZOOKEEPER_RETRY_WAIT);
 
         int maxRetryAttempts =
-                configuration.getInteger(HighAvailabilityOptions.ZOOKEEPER_MAX_RETRY_ATTEMPTS);
+                configuration.get(HighAvailabilityOptions.ZOOKEEPER_MAX_RETRY_ATTEMPTS);
 
         String root = configuration.getValue(HighAvailabilityOptions.HA_ZOOKEEPER_ROOT);
 
         String namespace = configuration.getValue(HighAvailabilityOptions.HA_CLUSTER_ID);
 
-        boolean disableSaslClient =
-                configuration.getBoolean(SecurityOptions.ZOOKEEPER_SASL_DISABLE);
+        boolean disableSaslClient = configuration.get(SecurityOptions.ZOOKEEPER_SASL_DISABLE);
 
         ACLProvider aclProvider;
 
@@ -257,7 +235,7 @@ public class ZooKeeperUtils {
         LOG.info("Using '{}' as Zookeeper namespace.", rootWithNamespace);
 
         boolean ensembleTracking =
-                configuration.getBoolean(HighAvailabilityOptions.ZOOKEEPER_ENSEMBLE_TRACKING);
+                configuration.get(HighAvailabilityOptions.ZOOKEEPER_ENSEMBLE_TRACKING);
 
         final CuratorFrameworkFactory.Builder curatorFrameworkBuilder =
                 CuratorFrameworkFactory.builder()
@@ -270,6 +248,43 @@ public class ZooKeeperUtils {
                         .namespace(trimStartingSlash(rootWithNamespace))
                         .ensembleTracker(ensembleTracking)
                         .aclProvider(aclProvider);
+
+        if (configuration.contains(HighAvailabilityOptions.ZOOKEEPER_CLIENT_AUTHORIZATION)) {
+            Map<String, String> authMap =
+                    configuration.get(HighAvailabilityOptions.ZOOKEEPER_CLIENT_AUTHORIZATION);
+            List<AuthInfo> authInfos =
+                    authMap.entrySet().stream()
+                            .map(
+                                    entry ->
+                                            new AuthInfo(
+                                                    entry.getKey(),
+                                                    entry.getValue()
+                                                            .getBytes(
+                                                                    ConfigConstants
+                                                                            .DEFAULT_CHARSET)))
+                            .collect(Collectors.toList());
+            curatorFrameworkBuilder.authorization(authInfos);
+        }
+
+        if (configuration.contains(HighAvailabilityOptions.ZOOKEEPER_MAX_CLOSE_WAIT)) {
+            long maxCloseWait =
+                    configuration.get(HighAvailabilityOptions.ZOOKEEPER_MAX_CLOSE_WAIT).toMillis();
+            if (maxCloseWait < 0 || maxCloseWait > Integer.MAX_VALUE) {
+                throw new IllegalConfigurationException(
+                        "The value (%d ms) is out-of-range for %s. The milliseconds timeout is expected to be between 0 and %d ms.",
+                        maxCloseWait,
+                        HighAvailabilityOptions.ZOOKEEPER_MAX_CLOSE_WAIT.key(),
+                        Integer.MAX_VALUE);
+            }
+            curatorFrameworkBuilder.maxCloseWaitMs((int) maxCloseWait);
+        }
+
+        if (configuration.contains(
+                HighAvailabilityOptions.ZOOKEEPER_SIMULATED_SESSION_EXP_PERCENT)) {
+            curatorFrameworkBuilder.simulatedSessionExpirationPercent(
+                    configuration.get(
+                            HighAvailabilityOptions.ZOOKEEPER_SIMULATED_SESSION_EXP_PERCENT));
+        }
 
         if (configuration.get(HighAvailabilityOptions.ZOOKEEPER_TOLERATE_SUSPENDED_CONNECTIONS)) {
             curatorFrameworkBuilder.connectionStateErrorPolicy(
@@ -408,62 +423,6 @@ public class ZooKeeperUtils {
                 client, path, leaderInformationClearancePolicy);
     }
 
-    /**
-     * Creates a {@link DefaultLeaderElectionService} instance with {@link
-     * ZooKeeperLeaderElectionDriver}.
-     *
-     * @param client The {@link CuratorFramework} ZooKeeper client to use
-     * @return {@link DefaultLeaderElectionService} instance.
-     */
-    @Deprecated
-    public static DefaultLeaderElectionService createLeaderElectionService(CuratorFramework client)
-            throws Exception {
-
-        return createLeaderElectionService(client, "");
-    }
-
-    /**
-     * Creates a {@link DefaultLeaderElectionService} instance with {@link
-     * ZooKeeperLeaderElectionDriver}.
-     *
-     * @param client The {@link CuratorFramework} ZooKeeper client to use
-     * @param path The path for the leader election
-     * @return {@link DefaultLeaderElectionService} instance.
-     */
-    @Deprecated
-    public static DefaultLeaderElectionService createLeaderElectionService(
-            final CuratorFramework client, final String path) throws Exception {
-        final DefaultLeaderElectionService leaderElectionService =
-                new DefaultLeaderElectionService(createLeaderElectionDriverFactory(client, path));
-        leaderElectionService.startLeaderElectionBackend();
-
-        return leaderElectionService;
-    }
-
-    /**
-     * Creates a {@link LeaderElectionDriverFactory} implemented by ZooKeeper.
-     *
-     * @param client The {@link CuratorFramework} ZooKeeper client to use
-     * @return {@link LeaderElectionDriverFactory} instance.
-     */
-    @Deprecated
-    public static ZooKeeperLeaderElectionDriverFactory createLeaderElectionDriverFactory(
-            final CuratorFramework client) {
-        return createLeaderElectionDriverFactory(client, "");
-    }
-
-    /**
-     * Creates a {@link LeaderElectionDriverFactory} implemented by ZooKeeper.
-     *
-     * @param client The {@link CuratorFramework} ZooKeeper client to use
-     * @param path The path suffix which we want to append
-     * @return {@link LeaderElectionDriverFactory} instance.
-     */
-    public static ZooKeeperLeaderElectionDriverFactory createLeaderElectionDriverFactory(
-            final CuratorFramework client, final String path) {
-        return new ZooKeeperLeaderElectionDriverFactory(client, path);
-    }
-
     public static void writeLeaderInformationToZooKeeper(
             LeaderInformation leaderInformation,
             CuratorFramework curatorFramework,
@@ -564,7 +523,7 @@ public class ZooKeeperUtils {
 
         // ZooKeeper submitted jobs root dir
         String zooKeeperJobsPath =
-                configuration.getString(HighAvailabilityOptions.HA_ZOOKEEPER_JOBGRAPHS_PATH);
+                configuration.get(HighAvailabilityOptions.HA_ZOOKEEPER_JOBGRAPHS_PATH);
 
         // Ensure that the job graphs path exists
         client.newNamespaceAwareEnsurePath(zooKeeperJobsPath).ensure(client.getZookeeperClient());
@@ -692,13 +651,10 @@ public class ZooKeeperUtils {
 
     /** Creates a ZooKeeper path of the form "/a/b/.../z". */
     public static String generateZookeeperPath(String... paths) {
-        final String result =
-                Arrays.stream(paths)
-                        .map(ZooKeeperUtils::trimSlashes)
-                        .filter(s -> !s.isEmpty())
-                        .collect(Collectors.joining("/", "/", ""));
-
-        return result;
+        return Arrays.stream(paths)
+                .map(ZooKeeperUtils::trimSlashes)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.joining("/", "/", ""));
     }
 
     /**
@@ -854,7 +810,7 @@ public class ZooKeeperUtils {
          *     HighAvailabilityOptions#ZOOKEEPER_CLIENT_ACL} if not configured.
          */
         public static ZkClientACLMode fromConfig(Configuration config) {
-            String aclMode = config.getString(HighAvailabilityOptions.ZOOKEEPER_CLIENT_ACL);
+            String aclMode = config.get(HighAvailabilityOptions.ZOOKEEPER_CLIENT_ACL);
             if (aclMode == null || aclMode.equalsIgnoreCase(OPEN.name())) {
                 return OPEN;
             } else if (aclMode.equalsIgnoreCase(CREATOR.name())) {

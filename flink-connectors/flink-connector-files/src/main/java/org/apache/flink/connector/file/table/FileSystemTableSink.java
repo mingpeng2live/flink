@@ -184,7 +184,7 @@ public class FileSystemTableSink extends AbstractFileSystemTable
                 .setMetaStoreFactory(new EmptyMetaStoreFactory(path))
                 .setOverwrite(overwrite)
                 .setStaticPartitions(staticPartitions)
-                .setTempPath(toStagingPath())
+                .setPath(path)
                 .setOutputFileConfig(
                         OutputFileConfig.builder()
                                 .withPartPrefix("part-" + UUID.randomUUID())
@@ -199,7 +199,10 @@ public class FileSystemTableSink extends AbstractFileSystemTable
                                                 .SINK_PARTITION_COMMIT_POLICY_CLASS),
                                 tableOptions.get(
                                         FileSystemConnectorOptions
-                                                .SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME)));
+                                                .SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME),
+                                tableOptions.get(
+                                        FileSystemConnectorOptions
+                                                .SINK_PARTITION_COMMIT_POLICY_CLASS_PARAMETERS)));
 
         DataStreamSink<RowData> sink = inputStream.writeUsingOutputFormat(builder.build());
         sink.getTransformation().setParallelism(parallelism, parallelismConfigured);
@@ -215,7 +218,7 @@ public class FileSystemTableSink extends AbstractFileSystemTable
         FileSystemFactory fsFactory = FileSystem::get;
         RowDataPartitionComputer computer = partitionComputer();
 
-        boolean autoCompaction = tableOptions.getBoolean(AUTO_COMPACTION);
+        boolean autoCompaction = tableOptions.get(AUTO_COMPACTION);
         Object writer = createWriter(sinkContext);
         boolean isEncoder = writer instanceof Encoder;
         TableBucketAssigner assigner = new TableBucketAssigner(computer);
@@ -368,19 +371,6 @@ public class FileSystemTableSink extends AbstractFileSystemTable
                         "Compaction reader not support DataStructure converter.");
             }
         };
-    }
-
-    private Path toStagingPath() {
-        Path stagingDir = new Path(path, ".staging_" + System.currentTimeMillis());
-        try {
-            FileSystem fs = stagingDir.getFileSystem();
-            Preconditions.checkState(
-                    fs.exists(stagingDir) || fs.mkdirs(stagingDir),
-                    "Failed to create staging dir " + stagingDir);
-            return stagingDir;
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     @SuppressWarnings("unchecked")

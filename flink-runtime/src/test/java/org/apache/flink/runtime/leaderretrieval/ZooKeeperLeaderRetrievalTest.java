@@ -23,13 +23,13 @@ import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.core.testutils.EachCallbackWrapper;
 import org.apache.flink.runtime.blob.VoidBlobStore;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.highavailability.zookeeper.ZooKeeperMultipleComponentLeaderElectionHaServices;
+import org.apache.flink.runtime.highavailability.zookeeper.ZooKeeperLeaderElectionHaServices;
 import org.apache.flink.runtime.jobmaster.JobMaster;
 import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.leaderelection.LeaderInformation;
 import org.apache.flink.runtime.leaderelection.TestingContender;
 import org.apache.flink.runtime.leaderelection.TestingLeaderElectionListener;
-import org.apache.flink.runtime.leaderelection.ZooKeeperMultipleComponentLeaderElectionDriver;
+import org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionDriver;
 import org.apache.flink.runtime.rpc.AddressResolution;
 import org.apache.flink.runtime.rpc.RpcSystem;
 import org.apache.flink.runtime.util.LeaderRetrievalUtils;
@@ -83,26 +83,24 @@ class ZooKeeperLeaderRetrievalTest {
     @BeforeEach
     void before() throws Exception {
         config = new Configuration();
-        config.setString(HighAvailabilityOptions.HA_MODE, "zookeeper");
-        config.setString(
+        config.set(HighAvailabilityOptions.HA_MODE, "zookeeper");
+        config.set(
                 HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, zooKeeperExtension.getConnectString());
 
         highAvailabilityServices =
-                new ZooKeeperMultipleComponentLeaderElectionHaServices(
+                new ZooKeeperLeaderElectionHaServices(
                         ZooKeeperUtils.startCuratorFramework(
                                 config,
                                 testingFatalErrorHandlerResource.getTestingFatalErrorHandler()),
                         config,
                         EXECUTOR_RESOURCE.getExecutor(),
-                        new VoidBlobStore(),
-                        testingFatalErrorHandlerResource.getTestingFatalErrorHandler());
+                        new VoidBlobStore());
     }
 
     @AfterEach
     void after() throws Exception {
         if (highAvailabilityServices != null) {
-            highAvailabilityServices.closeAndCleanupAllData();
-
+            highAvailabilityServices.closeWithOptionalClean(true);
             highAvailabilityServices = null;
         }
     }
@@ -141,6 +139,7 @@ class ZooKeeperLeaderRetrievalTest {
                             AddressResolution.NO_ADDRESS_RESOLUTION,
                             config);
 
+            final TestingLeaderElectionListener listener = new TestingLeaderElectionListener();
             try {
                 InetSocketAddress correctInetSocketAddress =
                         new InetSocketAddress(localHost, serverSocket.getLocalPort());
@@ -155,15 +154,14 @@ class ZooKeeperLeaderRetrievalTest {
 
                 // create driver to simulate a separate Flink process having leadership that writes
                 // its leader information to the ZooKeeper backend and gets lost afterward
-                final ZooKeeperMultipleComponentLeaderElectionDriver externalProcessDriver =
-                        new ZooKeeperMultipleComponentLeaderElectionDriver(
+                final ZooKeeperLeaderElectionDriver externalProcessDriver =
+                        new ZooKeeperLeaderElectionDriver(
                                 ZooKeeperUtils.useNamespaceAndEnsurePath(
                                         zooKeeperExtension.getZooKeeperClient(
                                                 testingFatalErrorHandlerResource
                                                         .getTestingFatalErrorHandler()),
                                         ZooKeeperUtils.generateLeaderLatchPath("")),
-                                new TestingLeaderElectionListener(),
-                                testingFatalErrorHandlerResource.getTestingFatalErrorHandler());
+                                listener);
                 externalProcessDriver.isLeader();
 
                 externalProcessDriver.publishLeaderInformation(
@@ -210,6 +208,7 @@ class ZooKeeperLeaderRetrievalTest {
                 if (leaderElection != null) {
                     leaderElection.close();
                 }
+                listener.failIfErrorEventHappened();
             }
         } catch (IOException e) {
             // may happen in certain test setups, skip test.

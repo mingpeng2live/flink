@@ -20,61 +20,55 @@ package org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty;
 
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 import org.apache.flink.util.ExceptionUtils;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
 /** The default implementation of {@link NettyConnectionReader}. */
 public class NettyConnectionReaderImpl implements NettyConnectionReader {
 
-    /** The index of input channel related to the reader. */
-    private final int inputChannelIndex;
-
     /** The provider to provide the input channel. */
     private final Supplier<InputChannel> inputChannelProvider;
 
-    /** The helper is used to notify the available and priority status of reader. */
-    private final NettyConnectionReaderAvailabilityAndPriorityHelper helper;
-
     /** The last required segment id. */
-    private int lastRequiredSegmentId = 0;
+    private final Map<Integer, Integer> lastRequiredSegmentIds = new HashMap<>();
 
-    public NettyConnectionReaderImpl(
-            int inputChannelIndex,
-            Supplier<InputChannel> inputChannelProvider,
-            NettyConnectionReaderAvailabilityAndPriorityHelper helper) {
-        this.inputChannelIndex = inputChannelIndex;
+    public NettyConnectionReaderImpl(Supplier<InputChannel> inputChannelProvider) {
         this.inputChannelProvider = inputChannelProvider;
-        this.helper = helper;
     }
 
     @Override
-    public Optional<Buffer> readBuffer(int segmentId) {
-        if (segmentId > 0L && (segmentId != lastRequiredSegmentId)) {
-            lastRequiredSegmentId = segmentId;
+    public int peekNextBufferSubpartitionId() throws IOException {
+        if (inputChannelProvider.get() instanceof RecoveredInputChannel) {
+            return -1;
+        }
+        return inputChannelProvider.get().peekNextBufferSubpartitionId();
+    }
+
+    @Override
+    public Optional<Buffer> readBuffer(int subpartitionId, int segmentId) {
+        if (segmentId > 0L
+                && (segmentId != lastRequiredSegmentIds.getOrDefault(subpartitionId, 0))) {
+            lastRequiredSegmentIds.put(subpartitionId, segmentId);
             try {
-                inputChannelProvider.get().notifyRequiredSegmentId(segmentId);
+                inputChannelProvider.get().notifyRequiredSegmentId(subpartitionId, segmentId);
             } catch (IOException e) {
                 ExceptionUtils.rethrow(e, "Failed to notify required segment id");
             }
         }
         Optional<InputChannel.BufferAndAvailability> bufferAndAvailability = Optional.empty();
         try {
+            if (inputChannelProvider.get().peekNextBufferSubpartitionId() != subpartitionId) {
+                return Optional.empty();
+            }
             bufferAndAvailability = inputChannelProvider.get().getNextBuffer();
         } catch (IOException | InterruptedException e) {
             ExceptionUtils.rethrow(e, "Failed to read buffer.");
-        }
-        if (bufferAndAvailability.isPresent()) {
-            if (bufferAndAvailability.get().moreAvailable()) {
-                helper.notifyReaderAvailableAndPriority(
-                        inputChannelIndex, bufferAndAvailability.get().hasPriority());
-            }
-            if (bufferAndAvailability.get().hasPriority()) {
-                helper.updatePrioritySequenceNumber(
-                        inputChannelIndex, bufferAndAvailability.get().getSequenceNumber());
-            }
         }
         return bufferAndAvailability.map(InputChannel.BufferAndAvailability::buffer);
     }

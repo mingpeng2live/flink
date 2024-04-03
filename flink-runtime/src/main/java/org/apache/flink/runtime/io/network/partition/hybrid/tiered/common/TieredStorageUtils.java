@@ -25,10 +25,8 @@ import org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-/** Utils for reading or writing from tiered storage. */
+/** Utils for reading from or writing to tiered storage. */
 public class TieredStorageUtils {
-
-    public static final String DATA_FILE_SUFFIX = ".tier-storage.data";
 
     public static ByteBuffer[] generateBufferWithHeaders(
             List<Tuple2<Buffer, Integer>> bufferWithIndexes) {
@@ -41,7 +39,7 @@ public class TieredStorageUtils {
         return bufferWithHeaders;
     }
 
-    public static void setBufferWithHeader(
+    private static void setBufferWithHeader(
             Buffer buffer, ByteBuffer[] bufferWithHeaders, int index) {
         ByteBuffer header = BufferReaderWriterUtil.allocatedHeaderBuffer();
         BufferReaderWriterUtil.setByteChannelBufferHeader(buffer, header);

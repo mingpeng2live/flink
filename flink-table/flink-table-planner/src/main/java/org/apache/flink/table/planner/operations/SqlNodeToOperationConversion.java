@@ -69,8 +69,6 @@ import org.apache.flink.sql.parser.dql.SqlShowCreateTable;
 import org.apache.flink.sql.parser.dql.SqlShowCreateView;
 import org.apache.flink.sql.parser.dql.SqlShowCurrentCatalog;
 import org.apache.flink.sql.parser.dql.SqlShowCurrentDatabase;
-import org.apache.flink.sql.parser.dql.SqlShowDatabases;
-import org.apache.flink.sql.parser.dql.SqlShowFunctions;
 import org.apache.flink.sql.parser.dql.SqlShowJars;
 import org.apache.flink.sql.parser.dql.SqlShowJobs;
 import org.apache.flink.sql.parser.dql.SqlShowModules;
@@ -132,9 +130,6 @@ import org.apache.flink.table.operations.ShowCreateTableOperation;
 import org.apache.flink.table.operations.ShowCreateViewOperation;
 import org.apache.flink.table.operations.ShowCurrentCatalogOperation;
 import org.apache.flink.table.operations.ShowCurrentDatabaseOperation;
-import org.apache.flink.table.operations.ShowDatabasesOperation;
-import org.apache.flink.table.operations.ShowFunctionsOperation;
-import org.apache.flink.table.operations.ShowFunctionsOperation.FunctionScope;
 import org.apache.flink.table.operations.ShowModulesOperation;
 import org.apache.flink.table.operations.ShowTablesOperation;
 import org.apache.flink.table.operations.ShowViewsOperation;
@@ -303,8 +298,6 @@ public class SqlNodeToOperationConversion {
             return Optional.of(converter.convertDropDatabase((SqlDropDatabase) validated));
         } else if (validated instanceof SqlAlterDatabase) {
             return Optional.of(converter.convertAlterDatabase((SqlAlterDatabase) validated));
-        } else if (validated instanceof SqlShowDatabases) {
-            return Optional.of(converter.convertShowDatabases((SqlShowDatabases) validated));
         } else if (validated instanceof SqlShowCurrentDatabase) {
             return Optional.of(
                     converter.convertShowCurrentDatabase((SqlShowCurrentDatabase) validated));
@@ -340,8 +333,6 @@ public class SqlNodeToOperationConversion {
             return Optional.of(converter.convertShowCreateTable((SqlShowCreateTable) validated));
         } else if (validated instanceof SqlShowCreateView) {
             return Optional.of(converter.convertShowCreateView((SqlShowCreateView) validated));
-        } else if (validated instanceof SqlShowFunctions) {
-            return Optional.of(converter.convertShowFunctions((SqlShowFunctions) validated));
         } else if (validated instanceof SqlRichExplain) {
             return Optional.of(converter.convertRichExplain((SqlRichExplain) validated));
         } else if (validated instanceof SqlRichDescribeTable) {
@@ -901,11 +892,6 @@ public class SqlNodeToOperationConversion {
         return new ShowCurrentCatalogOperation();
     }
 
-    /** Convert SHOW DATABASES statement. */
-    private Operation convertShowDatabases(SqlShowDatabases sqlShowDatabases) {
-        return new ShowDatabasesOperation();
-    }
-
     /** Convert SHOW CURRENT DATABASE statement. */
     private Operation convertShowCurrentDatabase(SqlShowCurrentDatabase sqlShowCurrentDatabase) {
         return new ShowCurrentDatabaseOperation();
@@ -968,12 +954,6 @@ public class SqlNodeToOperationConversion {
                 UnresolvedIdentifier.of(sqlShowCreateView.getFullViewName());
         ObjectIdentifier identifier = catalogManager.qualifyIdentifier(unresolvedIdentifier);
         return new ShowCreateViewOperation(identifier);
-    }
-
-    /** Convert SHOW FUNCTIONS statement. */
-    private Operation convertShowFunctions(SqlShowFunctions sqlShowFunctions) {
-        return new ShowFunctionsOperation(
-                sqlShowFunctions.requireUser() ? FunctionScope.USER : FunctionScope.ALL);
     }
 
     /** Convert DROP VIEW statement. */
@@ -1330,7 +1310,12 @@ public class SqlNodeToOperationConversion {
             }
         }
         // delete push down is not applicable, use row-level delete
-        PlannerQueryOperation queryOperation = new PlannerQueryOperation(tableModify);
+        PlannerQueryOperation queryOperation =
+                new PlannerQueryOperation(
+                        tableModify,
+                        () -> {
+                            throw new TableException("Delete statements are not SQL serializable.");
+                        });
         return new SinkModifyOperation(
                 contextResolvedTable,
                 queryOperation,
@@ -1351,7 +1336,12 @@ public class SqlNodeToOperationConversion {
                 catalogManager.getTableOrError(
                         catalogManager.qualifyIdentifier(unresolvedTableIdentifier));
         // get query
-        PlannerQueryOperation queryOperation = new PlannerQueryOperation(tableModify);
+        PlannerQueryOperation queryOperation =
+                new PlannerQueryOperation(
+                        tableModify,
+                        () -> {
+                            throw new TableException("Update statements are not SQL serializable.");
+                        });
 
         // TODO calc target column list to index array, currently only simple SqlIdentifiers are
         // available, this should be updated after FLINK-31344 fixed
@@ -1390,6 +1380,6 @@ public class SqlNodeToOperationConversion {
     private PlannerQueryOperation toQueryOperation(FlinkPlannerImpl planner, SqlNode validated) {
         // transform to a relational tree
         RelRoot relational = planner.rel(validated);
-        return new PlannerQueryOperation(relational.project());
+        return new PlannerQueryOperation(relational.project(), () -> getQuotedSqlString(validated));
     }
 }

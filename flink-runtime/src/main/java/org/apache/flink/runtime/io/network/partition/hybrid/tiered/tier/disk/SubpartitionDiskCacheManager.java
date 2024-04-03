@@ -35,7 +35,6 @@ import java.util.LinkedList;
 import java.util.List;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
-import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * The {@link SubpartitionDiskCacheManager} is responsible to manage the cached buffers in a single
@@ -109,8 +108,11 @@ class SubpartitionDiskCacheManager {
     }
 
     void release() {
-        recycleBuffers();
-        checkState(allBuffers.isEmpty(), "Leaking buffers.");
+        synchronized (allBuffers) {
+            while (!allBuffers.isEmpty()) {
+                allBuffers.poll().f0.recycleBuffer();
+            }
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -130,17 +132,5 @@ class SubpartitionDiskCacheManager {
             allBuffers.add(new Tuple2<>(buffer, bufferIndex));
         }
         bufferIndex++;
-    }
-
-    private void recycleBuffers() {
-        synchronized (allBuffers) {
-            for (Tuple2<Buffer, Integer> bufferAndIndex : allBuffers) {
-                Buffer buffer = bufferAndIndex.f0;
-                if (!buffer.isRecycled()) {
-                    buffer.recycleBuffer();
-                }
-            }
-            allBuffers.clear();
-        }
     }
 }

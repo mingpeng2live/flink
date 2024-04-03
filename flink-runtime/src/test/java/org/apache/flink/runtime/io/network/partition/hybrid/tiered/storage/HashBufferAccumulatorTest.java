@@ -37,7 +37,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.runtime.io.network.partition.hybrid.tiered.TieredStorageTestUtils.generateRandomData;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link HashBufferAccumulator}. */
 class HashBufferAccumulatorTest {
@@ -62,6 +61,17 @@ class HashBufferAccumulatorTest {
 
     @Test
     void testAccumulateRecordsAndGenerateFinishedBuffers() throws IOException {
+        testAccumulateRecordsAndGenerateFinishedBuffers(true);
+    }
+
+    @Test
+    void testAccumulateRecordsAndGenerateFinishedBuffersWithPartialRecordUnallowed()
+            throws IOException {
+        testAccumulateRecordsAndGenerateFinishedBuffers(false);
+    }
+
+    private void testAccumulateRecordsAndGenerateFinishedBuffers(boolean isPartialRecordAllowed)
+            throws IOException {
         int numBuffers = 10;
         int numRecords = 1000;
         TieredStorageSubpartitionId subpartitionId = new TieredStorageSubpartitionId(0);
@@ -70,15 +80,17 @@ class HashBufferAccumulatorTest {
         TieredStorageMemoryManager tieredStorageMemoryManager =
                 createStorageMemoryManager(numBuffers);
         try (HashBufferAccumulator bufferAccumulator =
-                new HashBufferAccumulator(1, NETWORK_BUFFER_SIZE, tieredStorageMemoryManager)) {
+                new HashBufferAccumulator(
+                        1,
+                        NETWORK_BUFFER_SIZE,
+                        tieredStorageMemoryManager,
+                        isPartialRecordAllowed)) {
             AtomicInteger numReceivedFinishedBuffer = new AtomicInteger(0);
             bufferAccumulator.setup(
-                    ((subpartition, buffers) ->
-                            buffers.forEach(
-                                    buffer -> {
-                                        numReceivedFinishedBuffer.incrementAndGet();
-                                        buffer.recycleBuffer();
-                                    })));
+                    ((subpartition, buffer, numRemainingBuffers) -> {
+                        numReceivedFinishedBuffer.incrementAndGet();
+                        buffer.recycleBuffer();
+                    }));
 
             int numRecordBytesSinceLastEvent = 0;
             int numExpectBuffers = 0;
@@ -89,7 +101,23 @@ class HashBufferAccumulatorTest {
                         isBuffer ? Buffer.DataType.DATA_BUFFER : Buffer.DataType.EVENT_BUFFER;
                 if (isBuffer) {
                     int numBytes = random.nextInt(2 * NETWORK_BUFFER_SIZE) + 1;
-                    numRecordBytesSinceLastEvent += numBytes;
+
+                    if (!isPartialRecordAllowed
+                            && numRecordBytesSinceLastEvent + numBytes > NETWORK_BUFFER_SIZE) {
+                        if (numRecordBytesSinceLastEvent > 0) {
+                            numExpectBuffers++;
+                            numRecordBytesSinceLastEvent = 0;
+                        }
+                    }
+
+                    if (!isPartialRecordAllowed && numBytes > NETWORK_BUFFER_SIZE) {
+                        numExpectBuffers +=
+                                numBytes / NETWORK_BUFFER_SIZE
+                                        + (numBytes % NETWORK_BUFFER_SIZE == 0 ? 0 : 1);
+                    } else {
+                        numRecordBytesSinceLastEvent += numBytes;
+                    }
+
                     record = generateRandomData(numBytes, random);
                 } else {
                     numExpectBuffers +=
@@ -115,9 +143,10 @@ class HashBufferAccumulatorTest {
         TieredStorageMemoryManager tieredStorageMemoryManager =
                 createStorageMemoryManager(numBuffers);
         try (HashBufferAccumulator bufferAccumulator =
-                new HashBufferAccumulator(1, NETWORK_BUFFER_SIZE, tieredStorageMemoryManager)) {
+                new HashBufferAccumulator(
+                        1, NETWORK_BUFFER_SIZE, tieredStorageMemoryManager, true)) {
             bufferAccumulator.setup(
-                    ((subpartition, buffers) -> buffers.forEach(Buffer::recycleBuffer)));
+                    ((subpartition, buffer, numRemainingBuffers) -> buffer.recycleBuffer()));
 
             ByteBuffer endEvent = EventSerializer.toSerializedEvent(EndOfPartitionEvent.INSTANCE);
             bufferAccumulator.receive(
@@ -137,29 +166,26 @@ class HashBufferAccumulatorTest {
 
         TieredStorageMemoryManager tieredStorageMemoryManager =
                 createStorageMemoryManager(numBuffers);
-        assertThatThrownBy(
-                        () -> {
-                            try (HashBufferAccumulator bufferAccumulator =
-                                    new HashBufferAccumulator(
-                                            1, NETWORK_BUFFER_SIZE, tieredStorageMemoryManager)) {
-                                bufferAccumulator.setup(
-                                        ((subpartition, buffers) ->
-                                                buffers.forEach(Buffer::recycleBuffer)));
-                                bufferAccumulator.receive(
-                                        generateRandomData(1, new Random()),
-                                        new TieredStorageSubpartitionId(0),
-                                        Buffer.DataType.DATA_BUFFER,
-                                        false);
-                            }
-                        })
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("There are unfinished buffers");
+        HashBufferAccumulator bufferAccumulator =
+                new HashBufferAccumulator(1, NETWORK_BUFFER_SIZE, tieredStorageMemoryManager, true);
+        bufferAccumulator.setup(
+                ((subpartition, buffer, numRemainingBuffers) -> buffer.recycleBuffer()));
+        bufferAccumulator.receive(
+                generateRandomData(1, new Random()),
+                new TieredStorageSubpartitionId(0),
+                Buffer.DataType.DATA_BUFFER,
+                false);
+        assertThat(tieredStorageMemoryManager.numOwnerRequestedBuffer(bufferAccumulator))
+                .isEqualTo(1);
+        bufferAccumulator.close();
+        assertThat(tieredStorageMemoryManager.numOwnerRequestedBuffer(this)).isZero();
     }
 
     private TieredStorageMemoryManagerImpl createStorageMemoryManager(int numBuffersInBufferPool)
             throws IOException {
         BufferPool bufferPool =
-                globalPool.createBufferPool(numBuffersInBufferPool, numBuffersInBufferPool);
+                globalPool.createBufferPool(
+                        numBuffersInBufferPool, numBuffersInBufferPool, numBuffersInBufferPool);
         TieredStorageMemoryManagerImpl storageMemoryManager =
                 new TieredStorageMemoryManagerImpl(NUM_BUFFERS_TRIGGER_FLUSH_RATIO, true);
         storageMemoryManager.setup(

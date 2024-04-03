@@ -20,7 +20,6 @@ package org.apache.flink.runtime.highavailability;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.AutoCloseableRegistry;
 import org.apache.flink.runtime.blob.BlobStore;
 import org.apache.flink.runtime.blob.BlobStoreService;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
@@ -28,7 +27,6 @@ import org.apache.flink.runtime.jobmanager.JobGraphStore;
 import org.apache.flink.runtime.leaderelection.DefaultLeaderElectionService;
 import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.leaderelection.LeaderElectionDriverFactory;
-import org.apache.flink.runtime.leaderelection.LeaderElectionService;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.util.ExceptionUtils;
 
@@ -49,8 +47,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * #getLeaderPathForRestServer}. The returned leader name is the ConfigMap name in Kubernetes and
  * child path in Zookeeper.
  *
- * <p>{@link #close()} and {@link #closeAndCleanupAllData()} should be implemented to destroy the
- * resources.
+ * <p>{@link #close()} and {@link #cleanupAllData()} should be implemented to destroy the resources.
  *
  * <p>The abstract class is also responsible for determining which component service should be
  * reused. For example, {@link #jobResultStore} is created once and could be reused many times.
@@ -70,10 +67,11 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
 
     private final JobResultStore jobResultStore;
 
-    private final AutoCloseableRegistry closeableRegistry = new AutoCloseableRegistry();
+    private final DefaultLeaderElectionService leaderElectionService;
 
     protected AbstractHaServices(
             Configuration config,
+            LeaderElectionDriverFactory driverFactory,
             Executor ioExecutor,
             BlobStoreService blobStoreService,
             JobResultStore jobResultStore) {
@@ -82,6 +80,8 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
         this.ioExecutor = checkNotNull(ioExecutor);
         this.blobStoreService = checkNotNull(blobStoreService);
         this.jobResultStore = checkNotNull(jobResultStore);
+
+        this.leaderElectionService = new DefaultLeaderElectionService(driverFactory);
     }
 
     @Override
@@ -111,23 +111,23 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
     }
 
     @Override
-    public LeaderElection getResourceManagerLeaderElection() throws Exception {
-        return createLeaderElection(getLeaderPathForResourceManager());
+    public LeaderElection getResourceManagerLeaderElection() {
+        return leaderElectionService.createLeaderElection(getLeaderPathForResourceManager());
     }
 
     @Override
-    public LeaderElection getDispatcherLeaderElection() throws Exception {
-        return createLeaderElection(getLeaderPathForDispatcher());
+    public LeaderElection getDispatcherLeaderElection() {
+        return leaderElectionService.createLeaderElection(getLeaderPathForDispatcher());
     }
 
     @Override
-    public LeaderElection getJobManagerLeaderElection(JobID jobID) throws Exception {
-        return createLeaderElection(getLeaderPathForJobManager(jobID));
+    public LeaderElection getJobManagerLeaderElection(JobID jobID) {
+        return leaderElectionService.createLeaderElection(getLeaderPathForJobManager(jobID));
     }
 
     @Override
-    public LeaderElection getClusterRestEndpointLeaderElection() throws Exception {
-        return createLeaderElection(getLeaderPathForRestServer());
+    public LeaderElection getClusterRestEndpointLeaderElection() {
+        return leaderElectionService.createLeaderElection(getLeaderPathForRestServer());
     }
 
     @Override
@@ -161,7 +161,9 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
         }
 
         try {
-            closeableRegistry.close();
+            if (leaderElectionService != null) {
+                leaderElectionService.close();
+            }
         } catch (Throwable t) {
             exception = ExceptionUtils.firstOrSuppressed(t, exception);
         }
@@ -179,8 +181,8 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
     }
 
     @Override
-    public void closeAndCleanupAllData() throws Exception {
-        logger.info("Close and clean up all data for {}.", getClass().getSimpleName());
+    public void cleanupAllData() throws Exception {
+        logger.info("Clean up all data for {}.", getClass().getSimpleName());
 
         Throwable exception = null;
 
@@ -189,38 +191,20 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
         try {
             internalCleanup();
             deletedHAData = true;
+            blobStoreService.cleanupAllData();
         } catch (Exception t) {
             exception = t;
         }
 
-        try {
-            closeableRegistry.close();
-        } catch (Throwable t) {
-            exception = ExceptionUtils.firstOrSuppressed(t, exception);
-        }
-
-        try {
-            internalClose();
-        } catch (Throwable t) {
-            exception = ExceptionUtils.firstOrSuppressed(t, exception);
-        }
-
-        try {
-            if (deletedHAData) {
-                blobStoreService.closeAndCleanupAllData();
-            } else {
-                logger.info(
-                        "Cannot delete HA blobs because we failed to delete the pointers in the HA store.");
-                blobStoreService.close();
-            }
-        } catch (Throwable t) {
-            exception = ExceptionUtils.firstOrSuppressed(t, exception);
+        if (!deletedHAData) {
+            logger.info(
+                    "Cannot delete HA blobs because we failed to delete the pointers in the HA store.");
         }
 
         if (exception != null) {
             ExceptionUtils.rethrowException(
                     exception,
-                    "Could not properly close and clean up all data of high availability service.");
+                    "Could not properly clean up all data of high availability service.");
         }
         logger.info("Finished cleaning up the high availability data.");
     }
@@ -240,30 +224,6 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
                 },
                 executor);
     }
-
-    private LeaderElection createLeaderElection(String leaderName) throws Exception {
-        final DefaultLeaderElectionService leaderElectionService =
-                new DefaultLeaderElectionService(createLeaderElectionDriverFactory(leaderName));
-        leaderElectionService.startLeaderElectionBackend();
-
-        closeableRegistry.registerCloseable(leaderElectionService);
-        // the leaderName which is passed as a contenderID here is not actively used within the
-        // DefaultLeaderElectionService for now - this will change in a future step where the
-        // DefaultLeaderElectionService will start to use MultipleComponentLeaderElectionDriver
-        // instead of LeaderElectionDriver and fully replace
-        // DefaultMultipleComponentLeaderElectionService (FLINK-31783)
-        return leaderElectionService.createLeaderElection("unused-contender-id");
-    }
-
-    /**
-     * Create {@link LeaderElectionDriverFactory} instance for the specified leaderName.
-     *
-     * @param leaderName ConfigMap name in Kubernetes or child node path in Zookeeper.
-     * @return Return {@code LeaderElectionDriverFactory} used for the {@link
-     *     LeaderElectionService}.
-     */
-    protected abstract LeaderElectionDriverFactory createLeaderElectionDriverFactory(
-            String leaderName);
 
     /**
      * Create leader retrieval service with specified leaderName.
@@ -300,8 +260,7 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
      * Clean up the meta data in the distributed system(e.g. Zookeeper, Kubernetes ConfigMap).
      *
      * <p>If an exception occurs during internal cleanup, we will continue the cleanup in {@link
-     * #closeAndCleanupAllData} and report exceptions only after all cleanup steps have been
-     * attempted.
+     * #cleanupAllData} and report exceptions only after all cleanup steps have been attempted.
      *
      * @throws Exception when do the cleanup operation on external storage.
      */

@@ -19,7 +19,6 @@ package org.apache.flink.runtime.scheduler.adaptive;
 
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.blob.VoidBlobWriter;
@@ -28,8 +27,8 @@ import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointRecoveryFactory;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
-import org.apache.flink.runtime.executiongraph.failover.flip1.NoRestartBackoffTimeStrategy;
-import org.apache.flink.runtime.executiongraph.failover.flip1.RestartBackoffTimeStrategy;
+import org.apache.flink.runtime.executiongraph.failover.NoRestartBackoffTimeStrategy;
+import org.apache.flink.runtime.executiongraph.failover.RestartBackoffTimeStrategy;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.io.network.partition.NoOpJobMasterPartitionTracker;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -53,6 +52,7 @@ import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Function;
 
 /** Builder for {@link AdaptiveScheduler}. */
 public class AdaptiveSchedulerBuilder {
@@ -61,6 +61,7 @@ public class AdaptiveSchedulerBuilder {
     private final JobGraph jobGraph;
 
     private final ComponentMainThreadExecutor mainThreadExecutor;
+    private final ScheduledExecutorService executorService;
 
     @Nullable private JobResourceRequirements jobResourceRequirements;
 
@@ -89,7 +90,9 @@ public class AdaptiveSchedulerBuilder {
     @Nullable private SlotAllocator slotAllocator;
 
     public AdaptiveSchedulerBuilder(
-            final JobGraph jobGraph, ComponentMainThreadExecutor mainThreadExecutor) {
+            final JobGraph jobGraph,
+            ComponentMainThreadExecutor mainThreadExecutor,
+            ScheduledExecutorService executorService) {
         this.jobGraph = jobGraph;
         this.mainThreadExecutor = mainThreadExecutor;
 
@@ -100,6 +103,7 @@ public class AdaptiveSchedulerBuilder {
                         ignored -> {},
                         DEFAULT_TIMEOUT,
                         rpcTimeout);
+        this.executorService = executorService;
     }
 
     public AdaptiveSchedulerBuilder setJobResourceRequirements(
@@ -111,6 +115,12 @@ public class AdaptiveSchedulerBuilder {
     public AdaptiveSchedulerBuilder setJobMasterConfiguration(
             final Configuration jobMasterConfiguration) {
         this.jobMasterConfiguration = jobMasterConfiguration;
+        return this;
+    }
+
+    public AdaptiveSchedulerBuilder withConfigurationOverride(
+            Function<Configuration, Configuration> modifyFn) {
+        this.jobMasterConfiguration = modifyFn.apply(jobMasterConfiguration);
         return this;
     }
 
@@ -196,7 +206,7 @@ public class AdaptiveSchedulerBuilder {
         return this;
     }
 
-    public AdaptiveScheduler build(ScheduledExecutorService executorService) throws Exception {
+    public AdaptiveScheduler build() throws Exception {
         final ExecutionGraphFactory executionGraphFactory =
                 new DefaultExecutionGraphFactory(
                         jobMasterConfiguration,
@@ -211,6 +221,7 @@ public class AdaptiveSchedulerBuilder {
                         partitionTracker);
 
         return new AdaptiveScheduler(
+                AdaptiveScheduler.Settings.of(jobMasterConfiguration),
                 jobGraph,
                 jobResourceRequirements,
                 jobMasterConfiguration,
@@ -223,8 +234,6 @@ public class AdaptiveSchedulerBuilder {
                 userCodeLoader,
                 checkpointsCleaner,
                 checkpointRecoveryFactory,
-                jobMasterConfiguration.get(JobManagerOptions.RESOURCE_WAIT_TIMEOUT),
-                jobMasterConfiguration.get(JobManagerOptions.RESOURCE_STABILIZATION_TIMEOUT),
                 jobManagerJobMetricGroup,
                 restartBackoffTimeStrategy,
                 initializationTimestamp,

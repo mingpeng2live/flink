@@ -49,6 +49,9 @@ public final class SpecificTypeStrategies {
     /** See {@link MapTypeStrategy}. */
     public static final TypeStrategy MAP = new MapTypeStrategy();
 
+    /** See {@link CollectTypeStrategy}. */
+    public static final TypeStrategy COLLECT = new CollectTypeStrategy();
+
     /** See {@link IfNullTypeStrategy}. */
     public static final TypeStrategy IF_NULL = new IfNullTypeStrategy();
 
@@ -58,8 +61,13 @@ public final class SpecificTypeStrategies {
     /** See {@link ArrayTypeStrategy}. */
     public static final TypeStrategy ARRAY = new ArrayTypeStrategy();
 
-    /** See {@link ArrayElementOutputTypeStrategy}. */
-    public static final TypeStrategy ARRAY_ELEMENT = new ArrayElementOutputTypeStrategy();
+    /** Type strategy specific for array element. */
+    public static final TypeStrategy ARRAY_ELEMENT = new ArrayElementTypeStrategy();
+
+    public static final TypeStrategy ITEM_AT = new ItemAtTypeStrategy();
+
+    /** See {@link ArrayAppendPrependTypeStrategy}. */
+    public static final TypeStrategy ARRAY_APPEND_PREPEND = new ArrayAppendPrependTypeStrategy();
 
     /** See {@link GetTypeStrategy}. */
     public static final TypeStrategy GET = new GetTypeStrategy();
@@ -90,6 +98,9 @@ public final class SpecificTypeStrategies {
 
     /** See {@link CurrentWatermarkTypeStrategy}. */
     public static final TypeStrategy CURRENT_WATERMARK = new CurrentWatermarkTypeStrategy();
+
+    /** See {@link RowtimeTypeStrategy}. */
+    public static final TypeStrategy ROWTIME = new RowtimeTypeStrategy();
 
     /** See {@link InternalReplicateRowsTypeStrategy}. */
     public static final TypeStrategy INTERNAL_REPLICATE_ROWS =

@@ -30,7 +30,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -45,31 +47,19 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * <p>{@code DefaultLeaderElectionService} handles a single {@link LeaderContender}.
  */
-public class DefaultLeaderElectionService extends AbstractLeaderElectionService
-        implements LeaderElectionEventHandler,
-                MultipleComponentLeaderElectionDriver.Listener,
-                AutoCloseable {
+public class DefaultLeaderElectionService extends DefaultLeaderElection.ParentService
+        implements LeaderElectionService, LeaderElectionDriver.Listener, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(DefaultLeaderElectionService.class);
 
+    private static final String LEADER_ACQUISITION_EVENT_LOG_NAME = "Leader Acquisition";
+    private static final String LEADER_REVOCATION_EVENT_LOG_NAME = "Leader Revocation";
     private final Object lock = new Object();
 
     private final LeaderElectionDriverFactory leaderElectionDriverFactory;
 
-    /**
-     * {@code contenderID} being {@code null} indicates that no {@link LeaderContender} is
-     * registered that participates in the leader election, yet. See {@link #register(String,
-     * LeaderContender)} and {@link #remove(String)} for lifecycle management.
-     *
-     * <p>{@code @Nullable} isn't used here to avoid having multiple warnings spread over this class
-     * in a supporting IDE.
-     */
     @GuardedBy("lock")
-    private String contenderID;
-
-    /** {@code leaderContender} is closely linked to the {@link #contenderID}. */
-    @GuardedBy("lock")
-    private LeaderContender leaderContender;
+    private final Map<String, LeaderContender> leaderContenderRegistry = new HashMap<>();
 
     /**
      * Saves the session ID which was issued by the {@link LeaderElectionDriver} if and only if the
@@ -83,27 +73,25 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
     private UUID issuedLeaderSessionID;
 
     /**
-     * Saves the leader information for a registered {@link LeaderContender} after this contender
-     * confirmed the leadership.
+     * Saves the {@link LeaderInformation} for the registered {@link LeaderContender}s. There's no
+     * semantic difference between an entry with an empty {@code LeaderInformation} and no entry
+     * being present at all here. Both mean that no confirmed {@code LeaderInformation} is available
+     * for the corresponding {@code componentId}.
      */
     @GuardedBy("lock")
-    private LeaderInformation confirmedLeaderInformation;
+    private LeaderInformationRegister confirmedLeaderInformation;
 
     @GuardedBy("lock")
     private boolean running;
 
     /**
-     * {@code leaderElectionDriver} being {@code null} indicates that the connection to the
-     * LeaderElection backend isn't established, yet. See {@link #startLeaderElectionBackend()} and
-     * {@link #close()} for lifecycle management. The lifecycle of the driver should have been
-     * established before registering a {@link LeaderContender} and stopped after the contender has
-     * been removed.
-     *
-     * <p>{@code @Nullable} isn't used here to avoid having multiple warnings spread over this class
-     * in a supporting IDE.
-     *
-     * <p>The driver is guarded by this instance's {@link #running} state.
+     * The driver's lifecycle is bound to the {@link #leaderContenderRegistry}: {@code
+     * leaderElectionDriver} is {@code null} if no contender is registered: A new driver is created
+     * as soon as the first contender is added to the empty {@code leaderContenderRegistry}. Only
+     * then, a connection to the {@code DefaultLeaderElectionService} backend is established. The
+     * service resets and closes the driver with the removal of the last contender.
      */
+    @GuardedBy("lock")
     private LeaderElectionDriver leaderElectionDriver;
 
     /**
@@ -146,136 +134,177 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
 
         this.fallbackErrorHandler = checkNotNull(fallbackErrorHandler);
 
-        this.leaderContender = null;
-
         this.issuedLeaderSessionID = null;
 
         this.leaderElectionDriver = null;
 
-        this.confirmedLeaderInformation = LeaderInformation.empty();
+        this.confirmedLeaderInformation = LeaderInformationRegister.empty();
 
         this.leadershipOperationExecutor = Preconditions.checkNotNull(leadershipOperationExecutor);
 
-        this.running = false;
-    }
-
-    /**
-     * Starts the leader election process. This method has to be called before registering a {@link
-     * LeaderContender}. This method could be moved into the {@code DefaultLeaderElectionService}'s
-     * constructor with FLINK-31837.
-     */
-    public void startLeaderElectionBackend() throws Exception {
-        synchronized (lock) {
-            Preconditions.checkState(
-                    leaderContender == null,
-                    "No LeaderContender should have been registered, yet.");
-            Preconditions.checkState(
-                    leaderElectionDriver == null,
-                    "This DefaultLeaderElectionService cannot be reused. Calling startLeaderElectionBackend can only be called once to establish the connection to the HA backend.");
-
-            running = true;
-
-            leaderElectionDriver =
-                    leaderElectionDriverFactory.createLeaderElectionDriver(
-                            this, new LeaderElectionFatalErrorHandler());
-
-            LOG.info("Instantiating DefaultLeaderElectionService with {}.", leaderElectionDriver);
-        }
+        this.running = true;
     }
 
     @Override
-    protected void register(String contenderID, LeaderContender contender) throws Exception {
-        checkNotNull(contenderID, "ContenderID must not be null.");
+    public LeaderElection createLeaderElection(String componentId) {
+        synchronized (lock) {
+            Preconditions.checkState(
+                    !leadershipOperationExecutor.isShutdown(),
+                    "The service was already closed and cannot be reused.");
+            Preconditions.checkState(
+                    !leaderContenderRegistry.containsKey(componentId),
+                    "There shouldn't be any contender registered under the passed component '%s'.",
+                    componentId);
+            return new DefaultLeaderElection(this, componentId);
+        }
+    }
+
+    @GuardedBy("lock")
+    private void createLeaderElectionDriver() throws Exception {
+        Preconditions.checkState(
+                leaderContenderRegistry.isEmpty(),
+                "No LeaderContender should have been registered, yet.");
+        Preconditions.checkState(
+                leaderElectionDriver == null,
+                "This DefaultLeaderElectionService cannot be reused. Calling startLeaderElectionBackend can only be called once to establish the connection to the HA backend.");
+
+        leaderElectionDriver = leaderElectionDriverFactory.create(this);
+
+        LOG.info(
+                "A connection to the HA backend was established through LeaderElectionDriver {}.",
+                leaderElectionDriver);
+    }
+
+    @Override
+    protected void register(String componentId, LeaderContender contender) throws Exception {
+        checkNotNull(componentId, "componentId must not be null.");
         checkNotNull(contender, "Contender must not be null.");
 
         synchronized (lock) {
             Preconditions.checkState(
-                    leaderContender == null,
-                    "Only one LeaderContender is allowed to be registered to this service.");
-            Preconditions.checkState(
-                    this.contenderID == null, "The contenderID is only allowed to be set once.");
-            Preconditions.checkState(
                     running,
                     "The DefaultLeaderElectionService should have established a connection to the backend before it's started.");
 
-            leaderContender = contender;
-            this.contenderID = contenderID;
+            if (leaderElectionDriver == null) {
+                createLeaderElectionDriver();
+            }
+
+            Preconditions.checkState(
+                    leaderContenderRegistry.put(componentId, contender) == null,
+                    "There shouldn't be any contender registered under the passed component '%s'.",
+                    componentId);
 
             LOG.info(
-                    "LeaderContender {} has been registered for {}.",
-                    contender.getDescription(),
+                    "LeaderContender has been registered under component '{}' for {}.",
+                    componentId,
                     leaderElectionDriver);
 
             if (issuedLeaderSessionID != null) {
                 // notifying the LeaderContender shouldn't happen in the contender's main thread
                 runInLeaderEventThread(
-                        () -> notifyLeaderContenderOfLeadership(issuedLeaderSessionID));
+                        LEADER_ACQUISITION_EVENT_LOG_NAME,
+                        () ->
+                                notifyLeaderContenderOfLeadership(
+                                        componentId, issuedLeaderSessionID));
             }
         }
     }
 
     @Override
-    protected final void remove(String contenderID) {
+    protected final void remove(String componentId) throws Exception {
+        AutoCloseable driverToClose = null;
         synchronized (lock) {
-            if (this.contenderID == null) {
+            if (!leaderContenderRegistry.containsKey(componentId)) {
                 LOG.debug(
-                        "The stop procedure was called on an already stopped DefaultLeaderElectionService instance. No action necessary.");
+                        "There is no contender registered under component '{}' anymore. No action necessary.",
+                        componentId);
                 return;
             }
+            Preconditions.checkState(
+                    leaderElectionDriver != null,
+                    "The LeaderElectionDriver should be instantiated.");
 
-            LOG.info("Stopping DefaultLeaderElectionService for {}.", this.contenderID);
+            LOG.info(
+                    "Deregistering contender with component '{}' from the DefaultLeaderElectionService.",
+                    componentId);
 
+            final LeaderContender leaderContender = leaderContenderRegistry.remove(componentId);
             Preconditions.checkNotNull(
                     leaderContender,
-                    "There should be a LeaderContender registered under the given contenderID '%s'.",
-                    this.contenderID);
+                    "There should be a LeaderContender registered under the given component '%s'.",
+                    componentId);
             if (issuedLeaderSessionID != null) {
-                notifyLeaderContenderOfLeadershipLoss();
+                notifyLeaderContenderOfLeadershipLoss(componentId, leaderContender);
                 LOG.debug(
-                        "DefaultLeaderElectionService is stopping while having the leadership acquired. The revoke event is forwarded to the LeaderContender.");
+                        "The contender associated with component '{}' is deregistered while the service has the leadership acquired. The revoke event is forwarded to the LeaderContender.",
+                        componentId);
 
                 if (leaderElectionDriver.hasLeadership()) {
-                    leaderElectionDriver.writeLeaderInformation(LeaderInformation.empty());
-                    LOG.debug("Leader information is cleaned up while stopping.");
+                    leaderElectionDriver.deleteLeaderInformation(componentId);
+                    LOG.debug(
+                            "Leader information is cleaned up while deregistering the contender for component '{}' from the service.",
+                            componentId);
                 }
             } else {
                 Preconditions.checkState(
-                        confirmedLeaderInformation.isEmpty(),
-                        "The confirmed leader information should have been cleared.");
+                        confirmedLeaderInformation.hasNoLeaderInformation(),
+                        "The confirmed leader information should have been cleared during leadership revocation.");
 
                 LOG.debug(
-                        "DefaultLeaderElectionService is stopping while not having the leadership acquired. No cleanup necessary.");
+                        "Contender associated with component '{}' is deregistered while the service doesn't have the leadership acquired. No cleanup necessary.",
+                        componentId);
             }
 
-            this.contenderID = null;
-            leaderContender = null;
+            if (leaderContenderRegistry.isEmpty()) {
+                driverToClose = deregisterDriver();
+            }
         }
+
+        if (driverToClose != null) {
+            driverToClose.close();
+        }
+    }
+
+    /**
+     * Returns the driver as an {@link AutoCloseable} for the sake of closing the driver outside of
+     * the lock.
+     */
+    @GuardedBy("lock")
+    private AutoCloseable deregisterDriver() {
+        Preconditions.checkState(
+                leaderContenderRegistry.isEmpty(),
+                "No contender should be registered when deregistering the driver.");
+        Preconditions.checkState(
+                leaderElectionDriver != null,
+                "There should be a driver instantiated that's ready to be closed.");
+
+        issuedLeaderSessionID = null;
+        final AutoCloseable driverToClose = leaderElectionDriver;
+        leaderElectionDriver = null;
+
+        return driverToClose;
     }
 
     @Override
     public void close() throws Exception {
         synchronized (lock) {
             Preconditions.checkState(
-                    leaderElectionDriver != null, "The HA backend wasn't initialized.");
-
-            Preconditions.checkState(
-                    leaderContender == null,
+                    leaderContenderRegistry.isEmpty(),
                     "The DefaultLeaderElectionService should have been stopped before closing the instance.");
-
-            issuedLeaderSessionID = null;
+            Preconditions.checkState(
+                    leaderElectionDriver == null, "The driver should have been closed.");
 
             if (running) {
                 running = false;
             } else {
                 LOG.debug("The HA backend connection isn't established. No actions taken.");
+                return;
             }
         }
 
-        leaderElectionDriver.close();
-
         // interrupt any outstanding events
         final List<Runnable> outstandingEventHandlingCalls =
-                Preconditions.checkNotNull(leadershipOperationExecutor).shutdownNow();
+                leadershipOperationExecutor.shutdownNow();
         if (!outstandingEventHandlingCalls.isEmpty()) {
             LOG.debug(
                     "The DefaultLeaderElectionService was closed with {} event(s) still not being processed. No further action necessary.",
@@ -285,35 +314,46 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
 
     @Override
     protected void confirmLeadership(
-            String contenderID, UUID leaderSessionID, String leaderAddress) {
-        Preconditions.checkArgument(contenderID.equals(this.contenderID));
+            String componentId, UUID leaderSessionID, String leaderAddress) {
+        Preconditions.checkArgument(leaderContenderRegistry.containsKey(componentId));
         LOG.debug(
-                "The leader session of {} is confirmed with session ID {} for and address {}.",
-                this.contenderID,
+                "The leader session for component '{}' is confirmed with session ID {} and address {}.",
+                componentId,
                 leaderSessionID,
                 leaderAddress);
 
         checkNotNull(leaderSessionID);
 
         synchronized (lock) {
-            if (hasLeadership(contenderID, leaderSessionID)) {
+            if (hasLeadership(componentId, leaderSessionID)) {
                 Preconditions.checkState(
-                        confirmedLeaderInformation.isEmpty(),
+                        leaderElectionDriver != null,
+                        "The leadership check should only return true if a driver is instantiated.");
+                Preconditions.checkState(
+                        !confirmedLeaderInformation.hasLeaderInformation(componentId),
                         "No confirmation should have happened, yet.");
 
-                confirmedLeaderInformation =
+                final LeaderInformation newConfirmedLeaderInformation =
                         LeaderInformation.known(leaderSessionID, leaderAddress);
-                leaderElectionDriver.writeLeaderInformation(confirmedLeaderInformation);
+                confirmedLeaderInformation =
+                        LeaderInformationRegister.merge(
+                                confirmedLeaderInformation,
+                                componentId,
+                                newConfirmedLeaderInformation);
+                leaderElectionDriver.publishLeaderInformation(
+                        componentId, newConfirmedLeaderInformation);
             } else {
                 if (!leaderSessionID.equals(this.issuedLeaderSessionID)) {
                     LOG.debug(
-                            "Receive an old confirmation call of leader session ID {}, current issued session ID is {}",
+                            "Received an old confirmation call of leader session ID {} for component '{}' (current issued session ID is {}).",
                             leaderSessionID,
+                            componentId,
                             issuedLeaderSessionID);
                 } else {
                     LOG.warn(
-                            "The leader session ID {} was confirmed even though the "
-                                    + "corresponding service was not elected as the leader or has been stopped already.",
+                            "The leader session ID {} for component '{}' was confirmed even though the corresponding "
+                                    + "service was not elected as the leader or has been stopped already.",
+                            componentId,
                             leaderSessionID);
                 }
             }
@@ -321,16 +361,16 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
     }
 
     @Override
-    protected boolean hasLeadership(String contenderID, UUID leaderSessionId) {
+    protected boolean hasLeadership(String componentId, UUID leaderSessionId) {
         synchronized (lock) {
             if (leaderElectionDriver != null) {
-                if (contenderID.equals(this.contenderID)) {
+                if (leaderContenderRegistry.containsKey(componentId)) {
                     return leaderElectionDriver.hasLeadership()
                             && leaderSessionId.equals(issuedLeaderSessionID);
                 } else {
                     LOG.debug(
-                            "hasLeadership is called for contender ID '{}' while there is no contender registered under that ID in service, returning false.",
-                            contenderID);
+                            "hasLeadership is called for component '{}' while there is no contender registered under that ID in the service, returning false.",
+                            componentId);
                     return false;
                 }
             } else {
@@ -341,22 +381,19 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
     }
 
     /**
-     * Returns the current leader session ID for the given {@code contenderID} or {@code null}, if
+     * Returns the current leader session ID for the given {@code componentId} or {@code null}, if
      * the session wasn't confirmed.
      */
     @VisibleForTesting
     @Nullable
-    public UUID getLeaderSessionID(String contenderID) {
+    public UUID getLeaderSessionID(String componentId) {
         synchronized (lock) {
-            return contenderID.equals(this.contenderID)
-                    ? confirmedLeaderInformation.getLeaderSessionID()
+            return leaderContenderRegistry.containsKey(componentId)
+                    ? confirmedLeaderInformation
+                            .forComponentIdOrEmpty(componentId)
+                            .getLeaderSessionID()
                     : null;
         }
-    }
-
-    @Override
-    public void onGrantLeadership(UUID newLeaderSessionId) {
-        runInLeaderEventThread(() -> onGrantLeadershipInternal(newLeaderSessionId));
     }
 
     @GuardedBy("lock")
@@ -369,12 +406,17 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
 
         issuedLeaderSessionID = newLeaderSessionId;
 
-        notifyLeaderContenderOfLeadership(issuedLeaderSessionID);
+        leaderContenderRegistry
+                .keySet()
+                .forEach(
+                        componentId ->
+                                notifyLeaderContenderOfLeadership(
+                                        componentId, issuedLeaderSessionID));
     }
 
     @GuardedBy("lock")
-    private void notifyLeaderContenderOfLeadership(UUID sessionID) {
-        if (leaderContender == null) {
+    private void notifyLeaderContenderOfLeadership(String componentId, UUID sessionID) {
+        if (!leaderContenderRegistry.containsKey(componentId)) {
             LOG.debug(
                     "The grant leadership notification for session ID {} is not forwarded because the DefaultLeaderElectionService ({}) has no contender registered.",
                     sessionID,
@@ -389,33 +431,28 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
         }
 
         Preconditions.checkState(
-                confirmedLeaderInformation.isEmpty(),
+                !confirmedLeaderInformation.hasLeaderInformation(componentId),
                 "The leadership should have been granted while not having the leadership acquired.");
 
         LOG.debug(
-                "Granting leadership to contender {} with session ID {}.",
-                leaderContender.getDescription(),
+                "Granting leadership to the contender registered under component '{}' with session ID {}.",
+                componentId,
                 issuedLeaderSessionID);
 
-        leaderContender.grantLeadership(issuedLeaderSessionID);
-    }
-
-    @Override
-    public void onRevokeLeadership() {
-        runInLeaderEventThread(this::onRevokeLeadershipInternal);
+        leaderContenderRegistry.get(componentId).grantLeadership(issuedLeaderSessionID);
     }
 
     @GuardedBy("lock")
     private void onRevokeLeadershipInternal() {
-        // TODO: FLINK-31814 covers adding this Precondition
-        // Preconditions.checkState(issuedLeaderSessionID != null,"The leadership should have
-        // been revoked while having the leadership acquired.");
+        Preconditions.checkState(
+                issuedLeaderSessionID != null,
+                "The leadership should have been revoked while having the leadership acquired.");
 
-        if (leaderContender != null) {
-            notifyLeaderContenderOfLeadershipLoss();
+        if (!leaderContenderRegistry.isEmpty()) {
+            leaderContenderRegistry.forEach(this::notifyLeaderContenderOfLeadershipLoss);
         } else {
             LOG.debug(
-                    "The revoke leadership for session {} notification is not forwarded because the DefaultLeaderElectionService({}) has no contender registered.",
+                    "The revoke leadership notification for session {} is not forwarded because the DefaultLeaderElectionService({}) has no contender registered.",
                     issuedLeaderSessionID,
                     leaderElectionDriver);
         }
@@ -424,69 +461,91 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
     }
 
     @GuardedBy("lock")
-    private void notifyLeaderContenderOfLeadershipLoss() {
+    private void notifyLeaderContenderOfLeadershipLoss(
+            String componentId, LeaderContender leaderContender) {
         Preconditions.checkState(
                 leaderContender != null,
                 "The LeaderContender should be always set when calling this method.");
 
-        if (confirmedLeaderInformation.isEmpty()) {
+        if (!confirmedLeaderInformation.hasLeaderInformation(componentId)) {
             LOG.debug(
-                    "Revoking leadership to contender {} while a previous leadership grant wasn't confirmed, yet.",
-                    leaderContender.getDescription());
+                    "Revoking leadership for component '{}' while a previous leadership grant wasn't confirmed, yet.",
+                    componentId);
         } else {
             LOG.debug(
-                    "Revoking leadership to contender {} for {}.",
-                    leaderContender.getDescription(),
-                    LeaderElectionUtils.convertToString(confirmedLeaderInformation));
+                    "Revoking leadership to component '{}' for previously confirmed leader information {}.",
+                    componentId,
+                    LeaderElectionUtils.convertToString(
+                            confirmedLeaderInformation.forComponentIdOrEmpty(componentId)));
         }
 
-        confirmedLeaderInformation = LeaderInformation.empty();
+        confirmedLeaderInformation =
+                LeaderInformationRegister.clear(confirmedLeaderInformation, componentId);
         leaderContender.revokeLeadership();
     }
 
-    @Override
-    public void onLeaderInformationChange(LeaderInformation leaderInformation) {
-        runInLeaderEventThread(() -> onLeaderInformationChangeInternal(leaderInformation));
-    }
-
     @GuardedBy("lock")
-    private void onLeaderInformationChangeInternal(LeaderInformation leaderInformation) {
-        if (leaderContender != null) {
-            LOG.trace(
-                    "Leader node changed while {} is the leader with {}. New leader information {}.",
-                    leaderContender.getDescription(),
-                    LeaderElectionUtils.convertToString(confirmedLeaderInformation),
-                    LeaderElectionUtils.convertToString(leaderInformation));
-            if (!confirmedLeaderInformation.isEmpty()) {
-                final LeaderInformation confirmedLeaderInfo = this.confirmedLeaderInformation;
-                if (leaderInformation.isEmpty()) {
-                    LOG.debug(
-                            "Writing leader information by {} since the external storage is empty.",
-                            leaderContender.getDescription());
-                    leaderElectionDriver.writeLeaderInformation(confirmedLeaderInfo);
-                } else if (!leaderInformation.equals(confirmedLeaderInfo)) {
-                    // the data field does not correspond to the expected leader information
-                    LOG.debug(
-                            "Correcting leader information by {}.",
-                            leaderContender.getDescription());
-                    leaderElectionDriver.writeLeaderInformation(confirmedLeaderInfo);
-                }
-            }
-        } else {
+    private void notifyLeaderInformationChangeInternal(
+            String componentId,
+            LeaderInformation externallyChangedLeaderInformation,
+            LeaderInformation confirmedLeaderInformation) {
+        if (leaderElectionDriver == null) {
             LOG.debug(
-                    "Ignoring change notification since the {} has already been stopped.",
-                    leaderElectionDriver);
+                    "The LeaderElectionDriver was disconnected. Any incoming events will be ignored.");
+            return;
         }
+
+        if (confirmedLeaderInformation.equals(externallyChangedLeaderInformation)) {
+            LOG.trace(
+                    "LeaderInformation change event received but changed LeaderInformation actually matches the locally confirmed one: {}",
+                    confirmedLeaderInformation);
+            return;
+        }
+
+        if (confirmedLeaderInformation.isEmpty()) {
+            LOG.trace(
+                    "Leader information changed while there's no confirmation available by the contender for component '{}', yet. Changed leader information {} will be reset.",
+                    componentId,
+                    LeaderElectionUtils.convertToString(externallyChangedLeaderInformation));
+        } else if (externallyChangedLeaderInformation.isEmpty()) {
+            LOG.debug(
+                    "Re-writing leader information ({}) for component '{}' to overwrite the empty leader information in the external storage.",
+                    LeaderElectionUtils.convertToString(confirmedLeaderInformation),
+                    componentId);
+        } else {
+            // the changed LeaderInformation does not match the confirmed LeaderInformation
+            LOG.debug(
+                    "Correcting leader information for component '{}' (local: {}, external storage: {}).",
+                    componentId,
+                    LeaderElectionUtils.convertToString(confirmedLeaderInformation),
+                    LeaderElectionUtils.convertToString(externallyChangedLeaderInformation));
+        }
+
+        leaderElectionDriver.publishLeaderInformation(componentId, confirmedLeaderInformation);
     }
 
-    private void runInLeaderEventThread(Runnable callback) {
+    private void runInLeaderEventThread(String leaderElectionEventName, Runnable callback) {
         synchronized (lock) {
             if (running) {
+                LOG.debug("'{}' event processing triggered.", leaderElectionEventName);
                 FutureUtils.handleUncaughtException(
                         CompletableFuture.runAsync(
                                 () -> {
                                     synchronized (lock) {
-                                        if (running) {
+                                        if (!running) {
+                                            LOG.debug(
+                                                    "Processing '{}' event omitted due to the service not being in running state, anymore.",
+                                                    leaderElectionEventName);
+                                        } else if (leaderElectionDriver == null) {
+                                            Preconditions.checkState(
+                                                    leaderContenderRegistry.isEmpty(),
+                                                    "All contenders should be deregistered when the driver is removed.");
+                                            LOG.debug(
+                                                    "All contenders have been deregistered and the driver was shut down. Any incoming leadership event will be ignored.");
+                                        } else {
+                                            LOG.debug(
+                                                    "Processing '{}' event.",
+                                                    leaderElectionEventName);
                                             callback.run();
                                         }
                                     }
@@ -495,57 +554,76 @@ public class DefaultLeaderElectionService extends AbstractLeaderElectionService
                         (thread, error) -> forwardErrorToLeaderContender(error));
             } else {
                 LOG.debug(
-                        "Leader event handling was triggered after the DefaultLeaderElectionService is closed. The event will be ignored.");
+                        "'{}' event processing was triggered while the DefaultLeaderElectionService is closed. The event will be ignored.",
+                        leaderElectionEventName);
             }
         }
     }
 
     private void forwardErrorToLeaderContender(Throwable t) {
         synchronized (lock) {
-            if (leaderContender == null) {
+            if (leaderContenderRegistry.isEmpty()) {
                 fallbackErrorHandler.onFatalError(t);
                 return;
             }
 
-            if (t instanceof LeaderElectionException) {
-                leaderContender.handleError((LeaderElectionException) t);
-            } else {
-                leaderContender.handleError(new LeaderElectionException(t));
-            }
+            leaderContenderRegistry
+                    .values()
+                    .forEach(
+                            leaderContender -> {
+                                if (t instanceof LeaderElectionException) {
+                                    leaderContender.handleError((LeaderElectionException) t);
+                                } else {
+                                    leaderContender.handleError(new LeaderElectionException(t));
+                                }
+                            });
         }
     }
 
     @Override
-    public void isLeader() {
-        onGrantLeadership(UUID.randomUUID());
+    public void onGrantLeadership(UUID leaderSessionID) {
+        runInLeaderEventThread(
+                LEADER_ACQUISITION_EVENT_LOG_NAME,
+                () -> onGrantLeadershipInternal(leaderSessionID));
     }
 
     @Override
-    public void notLeader() {
-        onRevokeLeadership();
+    public void onRevokeLeadership() {
+        runInLeaderEventThread(LEADER_REVOCATION_EVENT_LOG_NAME, this::onRevokeLeadershipInternal);
     }
 
     @Override
-    public void notifyLeaderInformationChange(
-            String contenderID, LeaderInformation leaderInformation) {
-        if (contenderID.equals(this.contenderID)) {
-            onLeaderInformationChange(leaderInformation);
+    public void onLeaderInformationChange(String componentId, LeaderInformation leaderInformation) {
+        synchronized (lock) {
+            notifyLeaderInformationChangeInternal(
+                    componentId,
+                    leaderInformation,
+                    confirmedLeaderInformation.forComponentIdOrEmpty(componentId));
         }
     }
 
     @Override
-    public void notifyAllKnownLeaderInformation(
-            LeaderInformationRegister leaderInformationRegister) {
-        leaderInformationRegister
-                .forContenderID(contenderID)
-                .ifPresent(this::onLeaderInformationChange);
+    public void onLeaderInformationChange(LeaderInformationRegister changedLeaderInformation) {
+        synchronized (lock) {
+            leaderContenderRegistry.forEach(
+                    (componentId, leaderContender) -> {
+                        final LeaderInformation externallyChangedLeaderInformationForContender =
+                                changedLeaderInformation
+                                        .forComponentId(componentId)
+                                        .orElse(LeaderInformation.empty());
+                        final LeaderInformation confirmedLeaderInformationForContender =
+                                confirmedLeaderInformation.forComponentIdOrEmpty(componentId);
+
+                        notifyLeaderInformationChangeInternal(
+                                componentId,
+                                externallyChangedLeaderInformationForContender,
+                                confirmedLeaderInformationForContender);
+                    });
+        }
     }
 
-    private class LeaderElectionFatalErrorHandler implements FatalErrorHandler {
-
-        @Override
-        public void onFatalError(Throwable throwable) {
-            forwardErrorToLeaderContender(throwable);
-        }
+    @Override
+    public void onError(Throwable t) {
+        forwardErrorToLeaderContender(t);
     }
 }

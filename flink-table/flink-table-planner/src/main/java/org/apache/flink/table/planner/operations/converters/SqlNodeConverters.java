@@ -48,6 +48,11 @@ public class SqlNodeConverters {
         register(new SqlQueryConverter());
         register(new SqlShowPartitionsConverter());
         register(new SqlTruncateTableConverter());
+        register(new SqlShowFunctionsConverter());
+        register(new SqlShowProcedureConverter());
+        register(new SqlReplaceTableAsConverter());
+        register(new SqlProcedureCallConverter());
+        register(new SqlShowDatabasesConverter());
     }
 
     /**

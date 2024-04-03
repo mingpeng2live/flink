@@ -63,12 +63,23 @@ class FlinkSqlParserImplTest extends SqlParserTest {
         sql("desc catalog a").ok("DESCRIBE CATALOG `A`");
     }
 
-    // ignore test methods that we don't support
-    // BEGIN
-    // ARRAY_AGG
-    @Disabled
     @Test
-    void testArrayAgg() {}
+    void testArrayAgg() {
+        sql("select\n"
+                        + "  array_agg(ename respect nulls order by deptno, ename) as c1,\n"
+                        + "  array_agg(ename order by deptno, ename desc) as c2,\n"
+                        + "  array_agg(distinct ename) as c3,\n"
+                        + "  array_agg(ename) as c4\n"
+                        + "from emp group by gender")
+                .ok(
+                        "SELECT"
+                                + " ARRAY_AGG(`ENAME` ORDER BY `DEPTNO`, `ENAME`) RESPECT NULLS AS `C1`,"
+                                + " ARRAY_AGG(`ENAME` ORDER BY `DEPTNO`, `ENAME` DESC) AS `C2`,"
+                                + " ARRAY_AGG(DISTINCT `ENAME`) AS `C3`,"
+                                + " ARRAY_AGG(`ENAME`) AS `C4`\n"
+                                + "FROM `EMP`\n"
+                                + "GROUP BY `GENDER`");
+    }
 
     // DESCRIBE SCHEMA
     @Disabled
@@ -124,6 +135,31 @@ class FlinkSqlParserImplTest extends SqlParserTest {
     @Test
     void testShowDataBases() {
         sql("show databases").ok("SHOW DATABASES");
+
+        sql("show databases like '%'").ok("SHOW DATABASES LIKE '%'");
+        sql("show databases not like '%'").ok("SHOW DATABASES NOT LIKE '%'");
+
+        sql("show databases from c1").ok("SHOW DATABASES FROM `C1`");
+        sql("show databases in c1").ok("SHOW DATABASES IN `C1`");
+
+        sql("show databases from c1 like '%'").ok("SHOW DATABASES FROM `C1` LIKE '%'");
+        sql("show databases from c1 ilike '%'").ok("SHOW DATABASES FROM `C1` ILIKE '%'");
+        sql("show databases in c1 like '%'").ok("SHOW DATABASES IN `C1` LIKE '%'");
+        sql("show databases in c1 ilike '%'").ok("SHOW DATABASES IN `C1` ILIKE '%'");
+
+        sql("show databases from c1 not like '%'").ok("SHOW DATABASES FROM `C1` NOT LIKE '%'");
+        sql("show databases from c1 not ilike '%'").ok("SHOW DATABASES FROM `C1` NOT ILIKE '%'");
+        sql("show databases in c1 not like '%'").ok("SHOW DATABASES IN `C1` NOT LIKE '%'");
+        sql("show databases in c1 not ilike '%'").ok("SHOW DATABASES IN `C1` NOT ILIKE '%'");
+
+        sql("show databases ^likes^")
+                .fails("(?s).*Encountered \"likes\" at line 1, column 16.\n.*");
+        sql("show databases not ^likes^")
+                .fails("(?s).*Encountered \"likes\" at line 1, column 20" + ".\n" + ".*");
+        sql("show databases ^ilikes^")
+                .fails("(?s).*Encountered \"ilikes\" at line 1, column 16.\n.*");
+        sql("show databases not ^ilikes^")
+                .fails("(?s).*Encountered \"ilikes\" at line 1, column 20" + ".\n" + ".*");
     }
 
     @Test
@@ -213,6 +249,99 @@ class FlinkSqlParserImplTest extends SqlParserTest {
     void testShowFunctions() {
         sql("show functions").ok("SHOW FUNCTIONS");
         sql("show user functions").ok("SHOW USER FUNCTIONS");
+
+        sql("show functions like '%'").ok("SHOW FUNCTIONS LIKE '%'");
+        sql("show functions not like '%'").ok("SHOW FUNCTIONS NOT LIKE '%'");
+        sql("show user functions like '%'").ok("SHOW USER FUNCTIONS LIKE '%'");
+        sql("show user functions not like '%'").ok("SHOW USER FUNCTIONS NOT LIKE '%'");
+
+        sql("show functions from db1").ok("SHOW FUNCTIONS FROM `DB1`");
+        sql("show user functions from db1").ok("SHOW USER FUNCTIONS FROM `DB1`");
+        sql("show functions in db1").ok("SHOW FUNCTIONS IN `DB1`");
+        sql("show user functions in db1").ok("SHOW USER FUNCTIONS IN `DB1`");
+
+        sql("show functions from catalog1.db1").ok("SHOW FUNCTIONS FROM `CATALOG1`.`DB1`");
+        sql("show user functions from catalog1.db1")
+                .ok("SHOW USER FUNCTIONS FROM `CATALOG1`.`DB1`");
+        sql("show functions in catalog1.db1").ok("SHOW FUNCTIONS IN `CATALOG1`.`DB1`");
+        sql("show user functions in catalog1.db1").ok("SHOW USER FUNCTIONS IN `CATALOG1`.`DB1`");
+
+        sql("show functions from db1 like '%'").ok("SHOW FUNCTIONS FROM `DB1` LIKE '%'");
+        sql("show user functions from db1 like '%'").ok("SHOW USER FUNCTIONS FROM `DB1` LIKE '%'");
+        sql("show functions in db1 ilike '%'").ok("SHOW FUNCTIONS IN `DB1` ILIKE '%'");
+        sql("show user functions in db1 ilike '%'").ok("SHOW USER FUNCTIONS IN `DB1` ILIKE '%'");
+
+        sql("show functions from catalog1.db1 ilike '%'")
+                .ok("SHOW FUNCTIONS FROM `CATALOG1`.`DB1` ILIKE '%'");
+        sql("show user functions from catalog1.db1 ilike '%'")
+                .ok("SHOW USER FUNCTIONS FROM `CATALOG1`.`DB1` ILIKE '%'");
+        sql("show functions in catalog1.db1 like '%'")
+                .ok("SHOW FUNCTIONS IN `CATALOG1`.`DB1` LIKE '%'");
+        sql("show user functions in catalog1.db1 like '%'")
+                .ok("SHOW USER FUNCTIONS IN `CATALOG1`.`DB1` LIKE '%'");
+
+        sql("show functions from db1 not like '%'").ok("SHOW FUNCTIONS FROM `DB1` NOT LIKE '%'");
+        sql("show user functions from db1 not like '%'")
+                .ok("SHOW USER FUNCTIONS FROM `DB1` NOT LIKE '%'");
+        sql("show functions in db1 not ilike '%'").ok("SHOW FUNCTIONS IN `DB1` NOT ILIKE '%'");
+        sql("show user functions in db1 not ilike '%'")
+                .ok("SHOW USER FUNCTIONS IN `DB1` NOT ILIKE '%'");
+
+        sql("show functions from catalog1.db1 not like '%'")
+                .ok("SHOW FUNCTIONS FROM `CATALOG1`.`DB1` NOT LIKE '%'");
+        sql("show user functions from catalog1.db1 not like '%'")
+                .ok("SHOW USER FUNCTIONS FROM `CATALOG1`.`DB1` NOT LIKE '%'");
+        sql("show functions in catalog1.db1 not ilike '%'")
+                .ok("SHOW FUNCTIONS IN `CATALOG1`.`DB1` NOT ILIKE '%'");
+        sql("show user functions in catalog1.db1 not ilike '%'")
+                .ok("SHOW USER FUNCTIONS IN `CATALOG1`.`DB1` NOT ILIKE '%'");
+
+        sql("show functions ^likes^")
+                .fails("(?s).*Encountered \"likes\" at line 1, column 16.\n.*");
+        sql("show functions not ^likes^")
+                .fails("(?s).*Encountered \"likes\" at line 1, column 20" + ".\n" + ".*");
+        sql("show functions ^ilikes^")
+                .fails("(?s).*Encountered \"ilikes\" at line 1, column 16.\n.*");
+        sql("show functions not ^ilikes^")
+                .fails("(?s).*Encountered \"ilikes\" at line 1, column 20" + ".\n" + ".*");
+    }
+
+    @Test
+    void testShowProcedures() {
+        sql("show procedures").ok("SHOW PROCEDURES");
+        sql("show procedures not like '%'").ok("SHOW PROCEDURES NOT LIKE '%'");
+
+        sql("show procedures from db1").ok("SHOW PROCEDURES FROM `DB1`");
+        sql("show procedures in db1").ok("SHOW PROCEDURES IN `DB1`");
+
+        sql("show procedures from catalog1.db1").ok("SHOW PROCEDURES FROM `CATALOG1`.`DB1`");
+        sql("show procedures in catalog1.db1").ok("SHOW PROCEDURES IN `CATALOG1`.`DB1`");
+
+        sql("show procedures from db1 like '%'").ok("SHOW PROCEDURES FROM `DB1` LIKE '%'");
+        sql("show procedures in db1 ilike '%'").ok("SHOW PROCEDURES IN `DB1` ILIKE '%'");
+
+        sql("show procedures from catalog1.db1 Ilike '%'")
+                .ok("SHOW PROCEDURES FROM `CATALOG1`.`DB1` ILIKE '%'");
+        sql("show procedures in catalog1.db1 like '%'")
+                .ok("SHOW PROCEDURES IN `CATALOG1`.`DB1` LIKE '%'");
+
+        sql("show procedures from db1 not like '%'").ok("SHOW PROCEDURES FROM `DB1` NOT LIKE '%'");
+        sql("show procedures in db1 not ilike '%'").ok("SHOW PROCEDURES IN `DB1` NOT ILIKE '%'");
+
+        sql("show procedures from catalog1.db1 not like '%'")
+                .ok("SHOW PROCEDURES FROM `CATALOG1`.`DB1` NOT LIKE '%'");
+        sql("show procedures in catalog1.db1 not ilike '%'")
+                .ok("SHOW PROCEDURES IN `CATALOG1`.`DB1` NOT ILIKE '%'");
+
+        sql("show procedures ^db1^").fails("(?s).*Encountered \"db1\" at line 1, column 17.\n.*");
+        sql("show procedures ^catalog1^.db1")
+                .fails("(?s).*Encountered \"catalog1\" at line 1, column 17.\n.*");
+
+        sql("show procedures ^search^ db1")
+                .fails("(?s).*Encountered \"search\" at line 1, column 17.\n.*");
+
+        sql("show procedures from db1 ^likes^ '%t'")
+                .fails("(?s).*Encountered \"likes\" at line 1, column 26.\n.*");
     }
 
     @Test
@@ -782,16 +911,154 @@ class FlinkSqlParserImplTest extends SqlParserTest {
         sql(sql).ok(expected);
     }
 
+    String buildDistributionInput(final String distributionClause) {
+        return "CREATE TABLE tbl1 (\n"
+                + "  a bigint,\n"
+                + "  h varchar, \n"
+                + "  b varchar,\n"
+                + "  PRIMARY KEY (a, b)\n"
+                + ")\n"
+                + distributionClause
+                + "  with (\n"
+                + "    'connector' = 'kafka', \n"
+                + "    'kafka.topic' = 'log.test'\n"
+                + ")\n";
+    }
+
+    String buildDistributionOutput(final String distributionClause) {
+        return "CREATE TABLE `TBL1` (\n"
+                + "  `A` BIGINT,\n"
+                + "  `H` VARCHAR,\n"
+                + "  `B` VARCHAR,\n"
+                + "  PRIMARY KEY (`A`, `B`)\n"
+                + ")\n"
+                + distributionClause
+                + "WITH (\n"
+                + "  'connector' = 'kafka',\n"
+                + "  'kafka.topic' = 'log.test'\n"
+                + ")";
+    }
+
     @Test
-    void testCreateTableIfNotExists() {
+    void testCreateTableWithDistribution() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY HASH(a, h) INTO 6 BUCKETS\n");
+        final String expected =
+                buildDistributionOutput("DISTRIBUTED BY HASH(`A`, `H`) INTO 6 BUCKETS\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithRangeDistribution() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY RANGE(a, h) INTO 6 BUCKETS\n");
+        final String expected =
+                buildDistributionOutput("DISTRIBUTED BY RANGE(`A`, `H`) INTO 6 BUCKETS\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithRandomDistribution() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY ^RANDOM^(a, h) INTO 6 BUCKETS\n");
+        sql(sql).fails("(?s).*Encountered \"RANDOM\" at line 7, column 16.*");
+    }
+
+    @Test
+    void testCreateTableWithDistributionNoAlgorithm() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY (a, h) INTO 6 BUCKETS\n");
+        final String expected =
+                buildDistributionOutput("DISTRIBUTED BY (`A`, `H`) INTO 6 BUCKETS\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithDistributionAlgorithmWithoutBuckets() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY RANGE(a, h)\n");
+        final String expected = buildDistributionOutput("DISTRIBUTED BY RANGE(`A`, `H`)\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithDistributionNoAlgorithmWithoutBuckets() {
+        final String sql = buildDistributionInput("DISTRIBUTED BY (a, h)\n");
+        final String expected = buildDistributionOutput("DISTRIBUTED BY (`A`, `H`)\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithDistributionIntoBuckets() {
+        final String sql = buildDistributionInput("DISTRIBUTED INTO 3 BUCKETS\n");
+        final String expected = buildDistributionOutput("DISTRIBUTED INTO 3 BUCKETS\n");
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithDistributionIntoNegativeBuckets() {
+        final String sql = buildDistributionInput("DISTRIBUTED INTO ^-^3 BUCKETS\n");
+        sql(sql).fails("(?s).*Encountered \"-\" at line 7, column 18.*");
+    }
+
+    @Test
+    void testCreateTableWithDistributionIntoDecimalBuckets() {
+        final String sql = buildDistributionInput("DISTRIBUTED INTO ^3.2^ BUCKETS\n");
+        sql(sql).fails("(?s).*Bucket count must be a positive integer.*");
+    }
+
+    @Test
+    void testCreateTableWithBadDistribution() {
         final String sql =
-                "CREATE TABLE IF NOT EXISTS tbl1 (\n"
+                "CREATE TABLE tbl1 (\n"
                         + "  a bigint,\n"
                         + "  h varchar, \n"
                         + "  g as 2 * (a + 1), \n"
                         + "  ts as toTimestamp(b, 'yyyy-MM-dd HH:mm:ss'), \n"
                         + "  b varchar,\n"
                         + "  proc as PROCTIME(), \n"
+                        + "  meta STRING METADATA, \n"
+                        + "  my_meta STRING METADATA FROM 'meta', \n"
+                        + "  my_meta STRING METADATA FROM 'meta' VIRTUAL, \n"
+                        + "  meta STRING METADATA VIRTUAL, \n"
+                        + "  PRIMARY KEY (a, b)\n"
+                        + ")\n"
+                        + "DISTRIBUTED \n"
+                        + "  ^with^ (\n"
+                        + "    'connector' = 'kafka', \n"
+                        + "    'kafka.topic' = 'log.test'\n"
+                        + ")\n";
+        sql(sql).fails("(?s).*Encountered \"with\" at line 15, column 3.*");
+    }
+
+    @Test
+    void testCreateTableWithDistributionIfNotExists() {
+        final String sql =
+                "CREATE TABLE if not exists tbl1 (\n"
+                        + "  a bigint,\n"
+                        + "  h varchar, \n"
+                        + "  PRIMARY KEY (a, b)\n"
+                        + ")\n"
+                        + "DISTRIBUTED BY HASH(a, h) INTO 6 BUCKETS\n"
+                        + "  with (\n"
+                        + "    'connector' = 'kafka', \n"
+                        + "    'kafka.topic' = 'log.test'\n"
+                        + ")\n";
+        final String expected =
+                "CREATE TABLE IF NOT EXISTS `TBL1` (\n"
+                        + "  `A` BIGINT,\n"
+                        + "  `H` VARCHAR,\n"
+                        + "  PRIMARY KEY (`A`, `B`)\n"
+                        + ")\n"
+                        + "DISTRIBUTED BY HASH(`A`, `H`) INTO 6 BUCKETS\n"
+                        + "WITH (\n"
+                        + "  'connector' = 'kafka',\n"
+                        + "  'kafka.topic' = 'log.test'\n"
+                        + ")";
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableIfNotExists() {
+        final String sql =
+                "CREATE TABLE IF NOT EXISTS tbl1 (\n"
+                        + "  a bigint,\n"
+                        + "  h varchar, \n"
                         + "  PRIMARY KEY (a, b)\n"
                         + ")\n"
                         + "PARTITIONED BY (a, h)\n"
@@ -803,10 +1070,6 @@ class FlinkSqlParserImplTest extends SqlParserTest {
                 "CREATE TABLE IF NOT EXISTS `TBL1` (\n"
                         + "  `A` BIGINT,\n"
                         + "  `H` VARCHAR,\n"
-                        + "  `G` AS (2 * (`A` + 1)),\n"
-                        + "  `TS` AS `TOTIMESTAMP`(`B`, 'yyyy-MM-dd HH:mm:ss'),\n"
-                        + "  `B` VARCHAR,\n"
-                        + "  `PROC` AS `PROCTIME`(),\n"
                         + "  PRIMARY KEY (`A`, `B`)\n"
                         + ")\n"
                         + "PARTITIONED BY (`A`, `H`)\n"
@@ -1557,6 +1820,72 @@ class FlinkSqlParserImplTest extends SqlParserTest {
                         + "  INCLUDING ALL\n"
                         + "  OVERWRITING OPTIONS\n"
                         + "  EXCLUDING PARTITIONS\n"
+                        + "  INCLUDING GENERATED\n"
+                        + "  INCLUDING METADATA\n"
+                        + ")";
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithLikeClauseIncludingDistribution() {
+        final String sql =
+                "create table source_table(\n"
+                        + "  a int,\n"
+                        + "  b bigint,\n"
+                        + "  c string\n"
+                        + ")\n"
+                        + "LIKE parent_table (\n"
+                        + "   INCLUDING ALL\n"
+                        + "   OVERWRITING OPTIONS\n"
+                        + "   INCLUDING DISTRIBUTION\n"
+                        + "   EXCLUDING PARTITIONS\n"
+                        + "   INCLUDING GENERATED\n"
+                        + "   INCLUDING METADATA\n"
+                        + ")";
+        final String expected =
+                "CREATE TABLE `SOURCE_TABLE` (\n"
+                        + "  `A` INTEGER,\n"
+                        + "  `B` BIGINT,\n"
+                        + "  `C` STRING\n"
+                        + ")\n"
+                        + "LIKE `PARENT_TABLE` (\n"
+                        + "  INCLUDING ALL\n"
+                        + "  OVERWRITING OPTIONS\n"
+                        + "  INCLUDING DISTRIBUTION\n"
+                        + "  EXCLUDING PARTITIONS\n"
+                        + "  INCLUDING GENERATED\n"
+                        + "  INCLUDING METADATA\n"
+                        + ")";
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testCreateTableWithLikeClauseExcludingDistribution() {
+        final String sql =
+                "create table source_table(\n"
+                        + "  a int,\n"
+                        + "  b bigint,\n"
+                        + "  c string\n"
+                        + ")\n"
+                        + "LIKE parent_table (\n"
+                        + "   INCLUDING ALL\n"
+                        + "   OVERWRITING OPTIONS\n"
+                        + "   EXCLUDING DISTRIBUTION\n"
+                        + "   INCLUDING PARTITIONS\n"
+                        + "   INCLUDING GENERATED\n"
+                        + "   INCLUDING METADATA\n"
+                        + ")";
+        final String expected =
+                "CREATE TABLE `SOURCE_TABLE` (\n"
+                        + "  `A` INTEGER,\n"
+                        + "  `B` BIGINT,\n"
+                        + "  `C` STRING\n"
+                        + ")\n"
+                        + "LIKE `PARENT_TABLE` (\n"
+                        + "  INCLUDING ALL\n"
+                        + "  OVERWRITING OPTIONS\n"
+                        + "  EXCLUDING DISTRIBUTION\n"
+                        + "  INCLUDING PARTITIONS\n"
                         + "  INCLUDING GENERATED\n"
                         + "  INCLUDING METADATA\n"
                         + ")";
@@ -2461,12 +2790,145 @@ class FlinkSqlParserImplTest extends SqlParserTest {
     }
 
     @Test
+    void testCreateTableAsSelectWithDistribution() {
+        sql("CREATE TABLE t DISTRIBUTED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE TABLE AS SELECT syntax does not support creating distributed tables yet."));
+    }
+
+    @Test
     void testCreateTableAsSelectWithPartitionKey() {
         sql("CREATE TABLE t PARTITIONED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
                 .node(
                         new ValidationMatcher()
                                 .fails(
                                         "CREATE TABLE AS SELECT syntax does not support to create partitioned table yet."));
+    }
+
+    @Test
+    void testReplaceTableAsSelect() {
+        // test replace table as select without options
+        sql("REPLACE TABLE t AS SELECT * FROM b").ok("REPLACE TABLE `T`\nAS\nSELECT *\nFROM `B`");
+
+        // test replace table as select with options
+        sql("REPLACE TABLE t WITH ('test' = 'zm') AS SELECT * FROM b")
+                .ok("REPLACE TABLE `T` WITH (\n  'test' = 'zm'\n)\nAS\nSELECT *\nFROM `B`");
+
+        // test replace table as select with tmp table
+        sql("REPLACE TEMPORARY TABLE t (col1 string) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "REPLACE TABLE AS SELECT syntax does not support temporary table yet."));
+
+        // test replace table as select with explicit columns
+        sql("REPLACE TABLE t (col1 string) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "REPLACE TABLE AS SELECT syntax does not support to specify explicit columns yet."));
+
+        // test replace table as select with watermark
+        sql("REPLACE TABLE t (watermark FOR ts AS ts - interval '3' second) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "REPLACE TABLE AS SELECT syntax does not support to specify explicit watermark yet."));
+
+        // test replace table as select with constraints
+        sql("REPLACE TABLE t (PRIMARY KEY (col1)) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "Flink doesn't support ENFORCED mode for PRIMARY KEY constraint. ENFORCED/NOT ENFORCED controls "
+                                                + "if the constraint checks are performed on the incoming/outgoing data. "
+                                                + "Flink does not own the data therefore the only supported mode is the NOT ENFORCED mode"));
+
+        sql("REPLACE TABLE t (PRIMARY KEY (col1), PRIMARY KEY (col2) NOT ENFORCED) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(new ValidationMatcher().fails("Duplicate primary key definition"));
+
+        sql("REPLACE TABLE t (UNIQUE (col1)) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(new ValidationMatcher().fails("UNIQUE constraint is not supported yet"));
+
+        // test replace table as select with partition key
+        sql("REPLACE TABLE t PARTITIONED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "REPLACE TABLE AS SELECT syntax does not support to create partitioned table yet."));
+
+        // test replace table as select with distribution
+        sql("REPLACE TABLE t DISTRIBUTED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "REPLACE TABLE AS SELECT syntax does not support creating distributed tables yet."));
+    }
+
+    @Test
+    void testCreateOrReplaceTableAsSelect() {
+        // test create or replace table as select without options
+        sql("CREATE OR REPLACE TABLE t AS SELECT * FROM b")
+                .ok("CREATE OR REPLACE TABLE `T`\nAS\nSELECT *\nFROM `B`");
+
+        // test create or replace table as select with options
+        sql("CREATE OR REPLACE TABLE t WITH ('test' = 'zm') AS SELECT * FROM b")
+                .ok(
+                        "CREATE OR REPLACE TABLE `T` WITH (\n  'test' = 'zm'\n)\nAS\nSELECT *\nFROM `B`");
+
+        // test create or replace table as select with create table like
+        sql("CREATE OR REPLACE TABLE t (col1 string) WITH ('test' = 'zm') like b ^AS^ SELECT col1 FROM b")
+                .fails("(?s).*Encountered \"AS\" at line 1, column 69.*");
+
+        // test create or replace table as select with tmp table
+        sql("CREATE OR REPLACE TEMPORARY TABLE t (col1 string) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE OR REPLACE TABLE AS SELECT syntax does not support temporary table yet."));
+
+        // test create or replace table as select with explicit columns
+        sql("CREATE OR REPLACE TABLE t (col1 string) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE OR REPLACE TABLE AS SELECT syntax does not support to specify explicit columns yet."));
+
+        // test create or replace table as select with watermark
+        sql("CREATE OR REPLACE TABLE t (watermark FOR ts AS ts - interval '3' second) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE OR REPLACE TABLE AS SELECT syntax does not support to specify explicit watermark yet."));
+        // test create or replace table as select with constraints
+        sql("CREATE OR REPLACE TABLE t (PRIMARY KEY (col1)) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "Flink doesn't support ENFORCED mode for PRIMARY KEY constraint. ENFORCED/NOT ENFORCED controls "
+                                                + "if the constraint checks are performed on the incoming/outgoing data. "
+                                                + "Flink does not own the data therefore the only supported mode is the NOT ENFORCED mode"));
+
+        sql("CREATE OR REPLACE TABLE t (PRIMARY KEY (col1), PRIMARY KEY (col2) NOT ENFORCED) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(new ValidationMatcher().fails("Duplicate primary key definition"));
+
+        sql("CREATE OR REPLACE TABLE t (UNIQUE (col1)) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(new ValidationMatcher().fails("UNIQUE constraint is not supported yet"));
+
+        // test create or replace table as select with partition key
+        sql("CREATE OR REPLACE TABLE t PARTITIONED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE OR REPLACE TABLE AS SELECT syntax does not support to create partitioned table yet."));
+
+        sql("CREATE OR REPLACE TABLE t DISTRIBUTED BY(col1) WITH ('test' = 'zm') AS SELECT col1 FROM b")
+                .node(
+                        new ValidationMatcher()
+                                .fails(
+                                        "CREATE OR REPLACE TABLE AS SELECT syntax does not support creating distributed tables yet."));
     }
 
     @Test

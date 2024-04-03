@@ -21,18 +21,21 @@ package org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageIdMappingUtils;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageInputChannelId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStoragePartitionId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageSubpartitionId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TestingTierFactory;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TieredStorageConsumerClient;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TieredStorageConsumerSpec;
-import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.memory.MemoryTierConsumerAgent;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.TierConsumerAgent;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.remote.TestingAvailabilityNotifier;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Collections;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,34 +43,83 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for {@link TieredStorageConsumerClient}. */
 class TieredStorageConsumerClientTest {
 
-    private final TieredStoragePartitionId partitionId =
+    private static final TieredStoragePartitionId DEFAULT_PARTITION_ID =
             TieredStorageIdMappingUtils.convertId(new ResultPartitionID());
 
-    private final TieredStorageSubpartitionId subpartitionId = new TieredStorageSubpartitionId(0);
+    private static final TieredStorageSubpartitionId DEFAULT_SUBPARTITION_ID =
+            new TieredStorageSubpartitionId(0);
+
+    private static final TieredStorageInputChannelId DEFAULT_INPUT_CHANNEL_ID =
+            new TieredStorageInputChannelId(0);
+
+    private static final ResultSubpartitionIndexSet DEFAULT_SUBPARTITION_ID_SET =
+            new ResultSubpartitionIndexSet(0);
 
     @Test
-    void testGetNextBuffer() {
-        Buffer buffer = BufferBuilderTestUtils.buildSomeBuffer(0);
-        TestingTieredStorageNettyService nettyService =
-                new TestingTieredStorageNettyService.Builder()
-                        .setRegisterConsumerFunction(
-                                (partitionId, subpartitionId) ->
-                                        CompletableFuture.completedFuture(
-                                                new TestingNettyConnectionReader.Builder()
-                                                        .setReadBufferFunction(segmentId -> buffer)
-                                                        .build()))
+    void testStart() {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        TestingTierConsumerAgent tierConsumerAgent =
+                new TestingTierConsumerAgent.Builder()
+                        .setStartNotifier(() -> future.complete(null))
                         .build();
-        TieredStorageConsumerClient tieredStorageConsumerClient =
-                new TieredStorageConsumerClient(
-                        Collections.singletonList(
-                                new TestingTierFactory.Builder()
-                                        .setTierConsumerAgentSupplier(MemoryTierConsumerAgent::new)
-                                        .build()),
-                        Collections.singletonList(
-                                new TieredStorageConsumerSpec(partitionId, subpartitionId)),
-                        nettyService);
-        Optional<Buffer> nextBuffer =
-                tieredStorageConsumerClient.getNextBuffer(partitionId, subpartitionId);
-        assertThat(nextBuffer).hasValue(buffer);
+        TieredStorageConsumerClient consumerClient =
+                createTieredStorageConsumerClient(tierConsumerAgent);
+        consumerClient.start();
+        assertThat(future).isDone();
+    }
+
+    @Test
+    void testGetNextBuffer() throws IOException {
+        Buffer buffer = BufferBuilderTestUtils.buildSomeBuffer(0);
+        TestingTierConsumerAgent tierConsumerAgent =
+                new TestingTierConsumerAgent.Builder().setBufferSupplier(() -> buffer).build();
+        TieredStorageConsumerClient consumerClient =
+                createTieredStorageConsumerClient(tierConsumerAgent);
+        assertThat(consumerClient.getNextBuffer(DEFAULT_PARTITION_ID, DEFAULT_SUBPARTITION_ID))
+                .hasValue(buffer);
+    }
+
+    @Test
+    void testRegisterAvailabilityNotifier() {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        TestingTierConsumerAgent tierConsumerAgent =
+                new TestingTierConsumerAgent.Builder()
+                        .setAvailabilityNotifierRegistrationRunnable(() -> future.complete(null))
+                        .build();
+        TieredStorageConsumerClient consumerClient =
+                createTieredStorageConsumerClient(tierConsumerAgent);
+        consumerClient.registerAvailabilityNotifier(
+                new TestingAvailabilityNotifier.Builder().build());
+        assertThat(future).isDone();
+    }
+
+    @Test
+    void testClose() throws IOException {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        TestingTierConsumerAgent tierConsumerAgent =
+                new TestingTierConsumerAgent.Builder()
+                        .setCloseNotifier(() -> future.complete(null))
+                        .build();
+        TieredStorageConsumerClient consumerClient =
+                createTieredStorageConsumerClient(tierConsumerAgent);
+        consumerClient.close();
+        assertThat(future).isDone();
+    }
+
+    private TieredStorageConsumerClient createTieredStorageConsumerClient(
+            TierConsumerAgent tierConsumerAgent) {
+        return new TieredStorageConsumerClient(
+                Collections.singletonList(
+                        new TestingTierFactory.Builder()
+                                .setTierConsumerAgentSupplier(
+                                        (tieredStorageConsumerSpecs, nettyService) ->
+                                                tierConsumerAgent)
+                                .build()),
+                Collections.singletonList(
+                        new TieredStorageConsumerSpec(
+                                DEFAULT_PARTITION_ID,
+                                DEFAULT_INPUT_CHANNEL_ID,
+                                DEFAULT_SUBPARTITION_ID_SET)),
+                new TestingTieredStorageNettyService.Builder().build());
     }
 }

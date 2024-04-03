@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage;
 
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
+import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -41,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 /** Tests for {@link TieredStorageMemoryManagerImpl}. */
-public class TieredStorageMemoryManagerImplTest {
+class TieredStorageMemoryManagerImplTest {
 
     private static final int NETWORK_BUFFER_SIZE = 1024;
 
@@ -74,7 +76,7 @@ public class TieredStorageMemoryManagerImplTest {
     void testRequestAndRecycleBuffers() throws IOException {
         int numBuffers = 1;
 
-        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, numBuffers);
+        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, numBuffers, numBuffers);
         TieredStorageMemoryManagerImpl storageMemoryManager =
                 createStorageMemoryManager(
                         bufferPool,
@@ -83,8 +85,54 @@ public class TieredStorageMemoryManagerImplTest {
         BufferBuilder builder = storageMemoryManager.requestBufferBlocking(this);
         assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(1);
         recycleBufferBuilder(builder);
-        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(0);
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(1);
         storageMemoryManager.release();
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(0);
+    }
+
+    @Test
+    void testRecycleBuffersAfterPoolSizeDecreased() throws IOException {
+        int numBuffers = 10;
+
+        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, 1, numBuffers);
+        TieredStorageMemoryManagerImpl storageMemoryManager =
+                createStorageMemoryManager(
+                        bufferPool,
+                        Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
+        for (int i = 0; i < numBuffers; i++) {
+            BufferBuilder builder = storageMemoryManager.requestBufferBlocking(this);
+            requestedBuffers.add(builder);
+        }
+
+        bufferPool.setNumBuffers(numBuffers / 2);
+
+        for (int i = 0; i < numBuffers; i++) {
+            recycleBufferBuilder(requestedBuffers.get(i));
+            assertThat(bufferPool.bestEffortGetNumOfUsedBuffers())
+                    .isEqualTo(Math.max(numBuffers / 2, numBuffers - (i + 1)));
+        }
+    }
+
+    @Test
+    void testRecycleBuffersAfterReleased() throws IOException {
+        int numBuffers = 10;
+
+        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, numBuffers, numBuffers);
+        TieredStorageMemoryManagerImpl storageMemoryManager =
+                createStorageMemoryManager(
+                        bufferPool,
+                        Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
+        for (int i = 0; i < numBuffers; i++) {
+            BufferBuilder builder = storageMemoryManager.requestBufferBlocking(this);
+            requestedBuffers.add(builder);
+        }
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(numBuffers);
+
+        storageMemoryManager.release();
+        for (int i = 0; i < numBuffers; i++) {
+            recycleBufferBuilder(requestedBuffers.get(i));
+        }
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(0);
     }
 
     @Test
@@ -209,34 +257,81 @@ public class TieredStorageMemoryManagerImplTest {
     }
 
     @Test
-    void testReleaseBeforeRecyclingBuffers() throws IOException {
-        int numBuffers = 5;
+    void testTransferBufferOwnership() throws IOException {
+        TieredStorageMemoryManagerImpl memoryManager =
+                createStorageMemoryManager(
+                        1, Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
+        BufferBuilder bufferBuilder = memoryManager.requestBufferBlocking(this);
+        assertThat(memoryManager.numOwnerRequestedBuffer(this)).isEqualTo(1);
 
+        BufferConsumer bufferConsumer = bufferBuilder.createBufferConsumerFromBeginning();
+        Buffer buffer = bufferConsumer.build();
+        bufferBuilder.close();
+        bufferConsumer.close();
+        Object newOwner = new Object();
+        memoryManager.transferBufferOwnership(this, newOwner, buffer);
+        assertThat(memoryManager.numOwnerRequestedBuffer(this)).isEqualTo(0);
+        assertThat(memoryManager.numOwnerRequestedBuffer(newOwner)).isEqualTo(1);
+        buffer.recycleBuffer();
+        assertThat(memoryManager.numOwnerRequestedBuffer(newOwner)).isEqualTo(0);
+    }
+
+    @Test
+    void testCanNotTransferOwnershipForEvent() throws IOException {
+        TieredStorageMemoryManagerImpl memoryManager =
+                createStorageMemoryManager(
+                        1, Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
+        BufferConsumer bufferConsumer =
+                BufferBuilderTestUtils.createEventBufferConsumer(1, Buffer.DataType.EVENT_BUFFER);
+        Buffer buffer = bufferConsumer.build();
+        bufferConsumer.close();
+        assertThatThrownBy(() -> memoryManager.transferBufferOwnership(this, new Object(), buffer))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void testEnsureCapacity() throws IOException {
+        final int numBuffers = 5;
+        final int guaranteedReclaimableBuffers = 3;
+
+        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, numBuffers, numBuffers);
         TieredStorageMemoryManagerImpl storageMemoryManager =
                 createStorageMemoryManager(
-                        numBuffers,
-                        Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
-        requestedBuffers.add(storageMemoryManager.requestBufferBlocking(this));
-        assertThatThrownBy(storageMemoryManager::release).isInstanceOf(IllegalStateException.class);
-        recycleRequestedBuffers();
+                        bufferPool,
+                        Arrays.asList(
+                                new TieredStorageMemorySpec(
+                                        new Object(), guaranteedReclaimableBuffers, true),
+                                new TieredStorageMemorySpec(this, 0, false)));
+        assertThat(storageMemoryManager.ensureCapacity(0)).isTrue();
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers())
+                .isEqualTo(guaranteedReclaimableBuffers);
+
+        assertThat(storageMemoryManager.ensureCapacity(numBuffers - guaranteedReclaimableBuffers))
+                .isTrue();
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isEqualTo(numBuffers);
+
+        assertThat(
+                        storageMemoryManager.ensureCapacity(
+                                numBuffers - guaranteedReclaimableBuffers + 1))
+                .isFalse();
         storageMemoryManager.release();
     }
 
     @Test
-    void testLeakingBuffers() throws IOException {
-        int numBuffers = 10;
+    void testRelease() throws IOException {
+        int numBuffers = 5;
+        BufferPool bufferPool = globalPool.createBufferPool(numBuffers, numBuffers, numBuffers);
 
         TieredStorageMemoryManagerImpl storageMemoryManager =
                 createStorageMemoryManager(
-                        numBuffers,
+                        bufferPool,
                         Collections.singletonList(new TieredStorageMemorySpec(this, 0)));
-
         requestedBuffers.add(storageMemoryManager.requestBufferBlocking(this));
-        assertThatThrownBy(storageMemoryManager::release)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Leaking buffers");
+        assertThat(storageMemoryManager.numOwnerRequestedBuffer(this)).isOne();
         recycleRequestedBuffers();
         storageMemoryManager.release();
+        assertThat(storageMemoryManager.numOwnerRequestedBuffer(this)).isZero();
+        assertThat(bufferPool.bestEffortGetNumOfUsedBuffers()).isZero();
     }
 
     public void onBufferReclaimRequest() {
@@ -259,7 +354,8 @@ public class TieredStorageMemoryManagerImplTest {
             int numBuffersInBufferPool, List<TieredStorageMemorySpec> storageMemorySpecs)
             throws IOException {
         BufferPool bufferPool =
-                globalPool.createBufferPool(numBuffersInBufferPool, numBuffersInBufferPool);
+                globalPool.createBufferPool(
+                        numBuffersInBufferPool, numBuffersInBufferPool, numBuffersInBufferPool);
         return createStorageMemoryManager(bufferPool, storageMemorySpecs);
     }
 

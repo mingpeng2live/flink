@@ -127,11 +127,6 @@ public class LeaderElectionTest {
         }
 
         @Override
-        public String getDescription() {
-            return "foobar";
-        }
-
-        @Override
         public void handleError(Exception exception) {
             this.exception = exception;
         }
@@ -155,7 +150,6 @@ public class LeaderElectionTest {
         LeaderElection createLeaderElection() throws Exception;
     }
 
-    @Deprecated
     private static final class ZooKeeperServiceClass implements ServiceClass {
 
         private TestingServer testingServer;
@@ -174,16 +168,17 @@ public class LeaderElectionTest {
 
             final Configuration configuration = new Configuration();
 
-            configuration.setString(
+            configuration.set(
                     HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, testingServer.getConnectString());
-            configuration.setString(HighAvailabilityOptions.HA_MODE, "zookeeper");
+            configuration.set(HighAvailabilityOptions.HA_MODE, "zookeeper");
 
             curatorFrameworkWrapper =
                     ZooKeeperUtils.startCuratorFramework(configuration, fatalErrorHandler);
 
-            leaderElectionService =
-                    ZooKeeperUtils.createLeaderElectionService(
+            final LeaderElectionDriverFactory driverFactory =
+                    new ZooKeeperLeaderElectionDriverFactory(
                             curatorFrameworkWrapper.asCuratorFramework());
+            leaderElectionService = new DefaultLeaderElectionService(driverFactory);
         }
 
         @Override
@@ -205,7 +200,7 @@ public class LeaderElectionTest {
 
         @Override
         public LeaderElection createLeaderElection() {
-            return leaderElectionService.createLeaderElection("random-contender-id");
+            return leaderElectionService.createLeaderElection("random-component-id");
         }
     }
 
@@ -227,7 +222,7 @@ public class LeaderElectionTest {
 
         @Override
         public LeaderElection createLeaderElection() {
-            return embeddedLeaderService.createLeaderElectionService();
+            return embeddedLeaderService.createLeaderElectionService("embedded_leader_election");
         }
     }
 

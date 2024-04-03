@@ -47,6 +47,8 @@ public class MemoryTierProducerAgent implements TierProducerAgent, NettyServiceP
 
     private final int numBuffersPerSegment;
 
+    private final int subpartitionMaxQueuedBuffers;
+
     private final TieredStorageMemoryManager memoryManager;
 
     /**
@@ -68,6 +70,7 @@ public class MemoryTierProducerAgent implements TierProducerAgent, NettyServiceP
             int numSubpartitions,
             int bufferSizeBytes,
             int segmentSizeBytes,
+            int subpartitionMaxQueuedBuffers,
             boolean isBroadcastOnly,
             TieredStorageMemoryManager memoryManager,
             TieredStorageNettyService nettyService,
@@ -80,6 +83,7 @@ public class MemoryTierProducerAgent implements TierProducerAgent, NettyServiceP
                 "Broadcast only partition is not allowed to use the memory tier.");
 
         this.numBuffersPerSegment = segmentSizeBytes / bufferSizeBytes;
+        this.subpartitionMaxQueuedBuffers = subpartitionMaxQueuedBuffers;
         this.memoryManager = memoryManager;
         this.currentSubpartitionWriteBuffers = new int[numSubpartitions];
         this.nettyConnectionEstablished = new boolean[numSubpartitions];
@@ -89,18 +93,26 @@ public class MemoryTierProducerAgent implements TierProducerAgent, NettyServiceP
         nettyService.registerProducer(partitionId, this);
         for (int subpartitionId = 0; subpartitionId < numSubpartitions; ++subpartitionId) {
             subpartitionProducerAgents[subpartitionId] =
-                    new MemoryTierSubpartitionProducerAgent(subpartitionId, nettyService);
+                    new MemoryTierSubpartitionProducerAgent(subpartitionId);
         }
         resourceRegistry.registerResource(partitionId, this::releaseResources);
     }
 
     @Override
-    public boolean tryStartNewSegment(TieredStorageSubpartitionId subpartitionId, int segmentId) {
+    public boolean tryStartNewSegment(
+            TieredStorageSubpartitionId subpartitionId, int segmentId, int minNumBuffers) {
         boolean canStartNewSegment =
                 nettyConnectionEstablished[subpartitionId.getSubpartitionId()]
+                        // Ensure that a subpartition's memory tier does not excessively use
+                        // buffers, which may result in insufficient buffers for other subpartitions
+                        && subpartitionProducerAgents[subpartitionId.getSubpartitionId()]
+                                        .numQueuedBuffers()
+                                < subpartitionMaxQueuedBuffers
                         && (memoryManager.getMaxNonReclaimableBuffers(this)
                                         - memoryManager.numOwnerRequestedBuffer(this))
-                                > numBuffersPerSegment;
+                                > Math.max(numBuffersPerSegment, minNumBuffers)
+                        && memoryManager.ensureCapacity(
+                                Math.max(numBuffersPerSegment, minNumBuffers));
         if (canStartNewSegment) {
             subpartitionProducerAgents[subpartitionId.getSubpartitionId()].updateSegmentId(
                     segmentId);
@@ -109,13 +121,23 @@ public class MemoryTierProducerAgent implements TierProducerAgent, NettyServiceP
     }
 
     @Override
-    public boolean tryWrite(TieredStorageSubpartitionId subpartitionId, Buffer finishedBuffer) {
+    public boolean tryWrite(
+            TieredStorageSubpartitionId subpartitionId,
+            Buffer finishedBuffer,
+            Object bufferOwner,
+            int numRemainingConsecutiveBuffers) {
         int subpartitionIndex = subpartitionId.getSubpartitionId();
         if (currentSubpartitionWriteBuffers[subpartitionIndex] != 0
-                && currentSubpartitionWriteBuffers[subpartitionIndex] + 1 > numBuffersPerSegment) {
+                && currentSubpartitionWriteBuffers[subpartitionIndex]
+                                + 1
+                                + numRemainingConsecutiveBuffers
+                        > numBuffersPerSegment) {
             appendEndOfSegmentEvent(subpartitionIndex);
             currentSubpartitionWriteBuffers[subpartitionIndex] = 0;
             return false;
+        }
+        if (finishedBuffer.isBuffer()) {
+            memoryManager.transferBufferOwnership(bufferOwner, this, finishedBuffer);
         }
         currentSubpartitionWriteBuffers[subpartitionIndex]++;
         addFinishedBuffer(finishedBuffer, subpartitionIndex);

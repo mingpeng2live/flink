@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStoragePartitionId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageSubpartitionId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty.TieredStorageNettyService;
@@ -67,6 +68,27 @@ public class TieredStorageConsumerClient {
         }
     }
 
+    /**
+     * Returns the index of the subpartition where the next buffer locates, or -1 if there is no
+     * buffer available or the subpartition index does not belong to the specified indexSet.
+     *
+     * @param partitionId The index of the partition which the returned subpartition should belong
+     *     to.
+     * @param indexSet The indexes of the subpartitions expected.
+     */
+    public int peekNextBufferSubpartitionId(
+            TieredStoragePartitionId partitionId, ResultSubpartitionIndexSet indexSet)
+            throws IOException {
+        for (TierConsumerAgent tierConsumerAgent : tierConsumerAgents) {
+            int subpartitionId =
+                    tierConsumerAgent.peekNextBufferSubpartitionId(partitionId, indexSet);
+            if (subpartitionId >= 0) {
+                return subpartitionId;
+            }
+        }
+        return -1;
+    }
+
     public Optional<Buffer> getNextBuffer(
             TieredStoragePartitionId partitionId, TieredStorageSubpartitionId subpartitionId) {
         Tuple2<TierConsumerAgent, Integer> currentConsumerAgentAndSegmentId =
@@ -107,6 +129,12 @@ public class TieredStorageConsumerClient {
             return getNextBuffer(partitionId, subpartitionId);
         }
         return Optional.of(bufferData);
+    }
+
+    public void registerAvailabilityNotifier(AvailabilityNotifier notifier) {
+        for (TierConsumerAgent tierConsumerAgent : tierConsumerAgents) {
+            tierConsumerAgent.registerAvailabilityNotifier(notifier);
+        }
     }
 
     public void close() throws IOException {

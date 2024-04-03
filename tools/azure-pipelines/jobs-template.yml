@@ -68,7 +68,7 @@ jobs:
     displayName: "Set JDK"
   # Compile
   - script: |
-      ${{parameters.environment}} ./tools/ci/compile.sh || exit $?
+      ${{parameters.environment}} ./tools/ci/compile_ci.sh || exit $?
       ./tools/azure-pipelines/create_build_artifact.sh
     displayName: Compile
 
@@ -95,10 +95,8 @@ jobs:
         module: python
       table:
         module: table
-      connect_1:
-        module: connect_1
-      connect_2:
-        module: connect_2
+      connect:
+        module: connect
       tests:
         module: tests
       misc:
@@ -152,7 +150,6 @@ jobs:
 
   # Test
   - script: ${{parameters.environment}} ./tools/azure-pipelines/uploading_watchdog.sh ./tools/ci/test_controller.sh $(module)
-    condition: or(not(eq(${{parameters.jdk}}, '17')), not(eq(variables.module, 'python')))
     displayName: Test - $(module)
     env:
       IT_CASE_S3_BUCKET: $(SECRET_S3_BUCKET)
@@ -166,7 +163,7 @@ jobs:
 
   # upload debug artifacts
   - task: PublishPipelineArtifact@1
-    condition: and(not(eq('$(DEBUG_FILES_OUTPUT_DIR)', '')), or(not(eq(${{parameters.jdk}}, '17')), not(eq(variables.module, 'python'))))
+    condition: not(eq('$(DEBUG_FILES_OUTPUT_DIR)', ''))
     displayName: Upload Logs
     inputs:
       targetPath: $(DEBUG_FILES_OUTPUT_DIR)

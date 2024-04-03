@@ -22,18 +22,22 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import javax.annotation.Nullable;
 
-import java.util.Queue;
-
 /** The default implementation of {@link NettyConnectionWriter}. */
 public class NettyConnectionWriterImpl implements NettyConnectionWriter {
 
-    private final Queue<NettyPayload> bufferQueue;
+    private final NettyPayloadManager nettyPayloadManager;
 
     private final NettyConnectionId connectionId;
 
-    public NettyConnectionWriterImpl(Queue<NettyPayload> bufferQueue) {
-        this.bufferQueue = bufferQueue;
+    private Runnable availabilityListener;
+
+    public NettyConnectionWriterImpl(NettyPayloadManager nettyPayloadManager) {
+        this.nettyPayloadManager = nettyPayloadManager;
         this.connectionId = NettyConnectionId.newId();
+    }
+
+    public void registerAvailabilityListener(Runnable availabilityListener) {
+        this.availabilityListener = availabilityListener;
     }
 
     @Override
@@ -42,23 +46,33 @@ public class NettyConnectionWriterImpl implements NettyConnectionWriter {
     }
 
     @Override
-    public int numQueuedBuffers() {
-        return bufferQueue.size();
+    public void notifyAvailable() {
+        availabilityListener.run();
     }
 
     @Override
-    public void writeBuffer(NettyPayload nettyPayload) {
-        bufferQueue.add(nettyPayload);
+    public int numQueuedPayloads() {
+        return nettyPayloadManager.getSize();
+    }
+
+    @Override
+    public int numQueuedBufferPayloads() {
+        return nettyPayloadManager.getBacklog();
+    }
+
+    @Override
+    public void writeNettyPayload(NettyPayload nettyPayload) {
+        nettyPayloadManager.add(nettyPayload);
     }
 
     @Override
     public void close(@Nullable Throwable error) {
         NettyPayload nettyPayload;
-        while ((nettyPayload = bufferQueue.poll()) != null) {
+        while ((nettyPayload = nettyPayloadManager.poll()) != null) {
             nettyPayload.getBuffer().ifPresent(Buffer::recycleBuffer);
         }
         if (error != null) {
-            writeBuffer(NettyPayload.newError(error));
+            writeNettyPayload(NettyPayload.newError(error));
         }
     }
 }
