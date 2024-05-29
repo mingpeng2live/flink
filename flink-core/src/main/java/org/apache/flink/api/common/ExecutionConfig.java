@@ -18,6 +18,7 @@
 
 package org.apache.flink.api.common;
 
+import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.PublicEvolving;
@@ -261,7 +262,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
      */
     @PublicEvolving
     public ExecutionConfig setLatencyTrackingInterval(long interval) {
-        configuration.set(MetricOptions.LATENCY_INTERVAL, interval);
+        configuration.set(MetricOptions.LATENCY_INTERVAL, Duration.ofMillis(interval));
         return this;
     }
 
@@ -272,7 +273,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
      */
     @PublicEvolving
     public long getLatencyTrackingInterval() {
-        return configuration.get(MetricOptions.LATENCY_INTERVAL);
+        return configuration.get(MetricOptions.LATENCY_INTERVAL).toMillis();
     }
 
     @Internal
@@ -391,7 +392,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
      * Gets the interval (in milliseconds) between consecutive attempts to cancel a running task.
      */
     public long getTaskCancellationInterval() {
-        return configuration.get(TaskManagerOptions.TASK_CANCELLATION_INTERVAL);
+        return configuration.get(TaskManagerOptions.TASK_CANCELLATION_INTERVAL).toMillis();
     }
 
     /**
@@ -401,7 +402,8 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
      * @param interval the interval (in milliseconds).
      */
     public ExecutionConfig setTaskCancellationInterval(long interval) {
-        configuration.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, interval);
+        configuration.set(
+                TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(interval));
         return this;
     }
 
@@ -414,7 +416,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
      */
     @PublicEvolving
     public long getTaskCancellationTimeout() {
-        return configuration.get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT);
+        return configuration.get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT).toMillis();
     }
 
     /**
@@ -432,7 +434,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
     @PublicEvolving
     public ExecutionConfig setTaskCancellationTimeout(long timeout) {
         checkArgument(timeout >= 0, "Timeout needs to be >= 0.");
-        configuration.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, timeout);
+        configuration.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(timeout));
         return this;
     }
 
@@ -1085,6 +1087,43 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
         configuration.set(ExecutionOptions.SNAPSHOT_COMPRESSION, useSnapshotCompression);
     }
 
+    // --------------------------------------------------------------------------------------------
+    //  Asynchronous execution configurations
+    // --------------------------------------------------------------------------------------------
+
+    @Experimental
+    public int getAsyncInflightRecordsLimit() {
+        return configuration.get(ExecutionOptions.ASYNC_INFLIGHT_RECORDS_LIMIT);
+    }
+
+    @Experimental
+    public ExecutionConfig setAsyncInflightRecordsLimit(int limit) {
+        configuration.set(ExecutionOptions.ASYNC_INFLIGHT_RECORDS_LIMIT, limit);
+        return this;
+    }
+
+    @Experimental
+    public int getAsyncStateBufferSize() {
+        return configuration.get(ExecutionOptions.ASYNC_STATE_BUFFER_SIZE);
+    }
+
+    @Experimental
+    public ExecutionConfig setAsyncStateBufferSize(int bufferSize) {
+        configuration.set(ExecutionOptions.ASYNC_STATE_BUFFER_SIZE, bufferSize);
+        return this;
+    }
+
+    @Experimental
+    public long getAsyncStateBufferTimeout() {
+        return configuration.get(ExecutionOptions.ASYNC_STATE_BUFFER_TIMEOUT);
+    }
+
+    @Experimental
+    public ExecutionConfig setAsyncStateBufferTimeout(long timeout) {
+        configuration.set(ExecutionOptions.ASYNC_STATE_BUFFER_TIMEOUT, timeout);
+        return this;
+    }
+
     @Override
     public boolean equals(Object obj) {
         if (obj instanceof ExecutionConfig) {
@@ -1250,7 +1289,7 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 
         configuration
                 .getOptional(MetricOptions.LATENCY_INTERVAL)
-                .ifPresent(this::setLatencyTrackingInterval);
+                .ifPresent(interval -> setLatencyTrackingInterval(interval.toMillis()));
 
         configuration
                 .getOptional(StateChangelogOptions.PERIODIC_MATERIALIZATION_ENABLED)
@@ -1269,10 +1308,10 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
         configuration.getOptional(PipelineOptions.OBJECT_REUSE).ifPresent(this::setObjectReuse);
         configuration
                 .getOptional(TaskManagerOptions.TASK_CANCELLATION_INTERVAL)
-                .ifPresent(this::setTaskCancellationInterval);
+                .ifPresent(interval -> setTaskCancellationInterval(interval.toMillis()));
         configuration
                 .getOptional(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT)
-                .ifPresent(this::setTaskCancellationTimeout);
+                .ifPresent(timeout -> setTaskCancellationTimeout(timeout.toMillis()));
         configuration
                 .getOptional(ExecutionOptions.SNAPSHOT_COMPRESSION)
                 .ifPresent(this::setUseSnapshotCompression);

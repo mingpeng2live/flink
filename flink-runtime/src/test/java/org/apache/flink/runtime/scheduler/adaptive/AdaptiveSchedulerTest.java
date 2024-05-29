@@ -54,8 +54,6 @@ import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraphTest;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
-import org.apache.flink.runtime.executiongraph.ExecutionGraph;
-import org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.executiongraph.failover.FixedDelayRestartBackoffTimeStrategy;
 import org.apache.flink.runtime.executiongraph.failover.NoRestartBackoffTimeStrategy;
@@ -64,7 +62,6 @@ import org.apache.flink.runtime.executiongraph.metrics.DownTimeGauge;
 import org.apache.flink.runtime.executiongraph.metrics.UpTimeGauge;
 import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
@@ -75,7 +72,6 @@ import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguratio
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
 import org.apache.flink.runtime.jobmanager.PartitionProducerDisposedException;
 import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
-import org.apache.flink.runtime.jobmaster.TestingLogicalSlotBuilder;
 import org.apache.flink.runtime.jobmaster.slotpool.DeclarativeSlotPool;
 import org.apache.flink.runtime.jobmaster.slotpool.DefaultAllocatedSlotPool;
 import org.apache.flink.runtime.jobmaster.slotpool.DefaultDeclarativeSlotPool;
@@ -149,7 +145,6 @@ import java.util.stream.Collectors;
 import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createExecutionAttemptId;
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.createNoOpVertex;
-import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.setVertexResource;
 import static org.apache.flink.runtime.jobgraph.JobGraphTestUtils.streamingJobGraph;
 import static org.apache.flink.runtime.jobmaster.slotpool.SlotPoolTestUtils.createSlotOffersForResourceRequirements;
 import static org.apache.flink.runtime.jobmaster.slotpool.SlotPoolTestUtils.offerSlots;
@@ -167,11 +162,11 @@ public class AdaptiveSchedulerTest {
     private static final Logger LOG = LoggerFactory.getLogger(AdaptiveSchedulerTest.class);
 
     @RegisterExtension
-    public static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
+    private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
             TestingUtils.defaultExecutorExtension();
 
     @RegisterExtension
-    public static final TestExecutorExtension<ScheduledExecutorService> TEST_EXECUTOR_RESOURCE =
+    private static final TestExecutorExtension<ScheduledExecutorService> TEST_EXECUTOR_RESOURCE =
             new TestExecutorExtension<>(Executors::newSingleThreadScheduledExecutor);
 
     private final ManuallyTriggeredComponentMainThreadExecutor mainThreadExecutor =
@@ -383,7 +378,7 @@ public class AdaptiveSchedulerTest {
                                 .readTree(executionGraph.getJsonPlan())
                                 .get("nodes")
                                 .size())
-                .isEqualTo(1);
+                .isOne();
     }
 
     @Test
@@ -838,7 +833,7 @@ public class AdaptiveSchedulerTest {
         // transition into next state, for which the job state is still INITIALIZING
         scheduler.transitionToState(new DummyState.Factory(JobStatus.INITIALIZING));
 
-        assertThat(numStatusUpdates.get()).isEqualTo(0);
+        assertThat(numStatusUpdates).hasValue(0);
     }
 
     @Test
@@ -1017,7 +1012,7 @@ public class AdaptiveSchedulerTest {
         ArchivedExecutionJobVertex archivedVertex = executionGraph.getJobVertex(vertex.getID());
 
         // ensure that the parallelism was submitted based on what is available
-        assertThat(archivedVertex.getParallelism()).isEqualTo(1);
+        assertThat(archivedVertex.getParallelism()).isOne();
         // and that the max parallelism was submitted based on what was configured
         assertThat(archivedVertex.getMaxParallelism()).isEqualTo(expectedMaxParallelism);
 
@@ -1784,56 +1779,6 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    void testSavepointFailsWhenBlockingEdgeExists() throws Exception {
-        JobVertex jobVertex = createNoOpVertex(PARALLELISM);
-        jobVertex.getOrCreateResultDataSet(
-                new IntermediateDataSetID(), ResultPartitionType.BLOCKING);
-
-        final ExecutionGraph executionGraph =
-                ExecutionGraphTestUtils.createExecutionGraph(
-                        EXECUTOR_RESOURCE.getExecutor(), jobVertex);
-
-        executionGraph
-                .getAllExecutionVertices()
-                .forEach(
-                        task ->
-                                setVertexResource(
-                                        task,
-                                        new TestingLogicalSlotBuilder()
-                                                .createTestingLogicalSlot()));
-        executionGraph.transitionToRunning();
-        executionGraph
-                .getAllExecutionVertices()
-                .forEach(
-                        task ->
-                                task.getCurrentExecutionAttempt()
-                                        .transitionState(ExecutionState.RUNNING));
-
-        final AdaptiveScheduler scheduler =
-                new AdaptiveSchedulerBuilder(
-                                streamingJobGraph(jobVertex),
-                                mainThreadExecutor,
-                                EXECUTOR_RESOURCE.getExecutor())
-                        .build();
-
-        scheduler.goToExecuting(executionGraph, null, null, Collections.emptyList());
-
-        assertThatFuture(
-                        scheduler.stopWithSavepoint(
-                                "some directory", false, SavepointFormatType.CANONICAL))
-                .eventuallyFailsWith(ExecutionException.class)
-                .withCauseInstanceOf(CheckpointException.class)
-                .withMessageContaining(CheckpointFailureReason.BLOCKING_OUTPUT_EXIST.message());
-
-        assertThatFuture(
-                        scheduler.triggerSavepoint(
-                                "some directory", false, SavepointFormatType.CANONICAL))
-                .eventuallyFailsWith(ExecutionException.class)
-                .withCauseInstanceOf(CheckpointException.class)
-                .withMessageContaining(CheckpointFailureReason.BLOCKING_OUTPUT_EXIST.message());
-    }
-
-    @Test
     void testDeliverOperatorEventToCoordinatorFailsInIllegalState() throws Exception {
         final AdaptiveScheduler scheduler =
                 new AdaptiveSchedulerBuilder(
@@ -1901,7 +1846,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testRequestPartitionStateFailsInIllegalState() throws Exception {
+    void testRequestPartitionStateFailsInIllegalState() throws Exception {
         final AdaptiveScheduler scheduler =
                 new AdaptiveSchedulerBuilder(
                                 createJobGraph(),
@@ -2015,7 +1960,7 @@ public class AdaptiveSchedulerTest {
         final Duration slotIdleTimeout = Duration.ofMillis(10);
 
         final Configuration configuration = createConfigurationWithNoTimeouts();
-        configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout.toMillis());
+        configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
 
         final DeclarativeSlotPool declarativeSlotPool =
                 createDeclarativeSlotPool(jobGraph.getJobID(), slotIdleTimeout);
@@ -2082,7 +2027,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testUpdateResourceRequirementsInReactiveModeIsNotSupported() throws Exception {
+    void testUpdateResourceRequirementsInReactiveModeIsNotSupported() throws Exception {
         final Configuration configuration = new Configuration();
         configuration.set(JobManagerOptions.SCHEDULER_MODE, SchedulerExecutionMode.REACTIVE);
         final AdaptiveScheduler scheduler =
@@ -2100,7 +2045,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testRequestDefaultResourceRequirements() throws Exception {
+    void testRequestDefaultResourceRequirements() throws Exception {
         final JobGraph jobGraph = createJobGraph();
         final Configuration configuration = new Configuration();
         final AdaptiveScheduler scheduler =
@@ -2117,7 +2062,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testRequestDefaultResourceRequirementsInReactiveMode() throws Exception {
+    void testRequestDefaultResourceRequirementsInReactiveMode() throws Exception {
         final JobGraph jobGraph = createJobGraph();
         final Configuration configuration = new Configuration();
         configuration.set(JobManagerOptions.SCHEDULER_MODE, SchedulerExecutionMode.REACTIVE);
@@ -2137,7 +2082,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testRequestUpdatedResourceRequirements() throws Exception {
+    void testRequestUpdatedResourceRequirements() throws Exception {
         final JobGraph jobGraph = createJobGraph();
         final Configuration configuration = new Configuration();
         final AdaptiveScheduler scheduler =
@@ -2167,7 +2112,7 @@ public class AdaptiveSchedulerTest {
     }
 
     @Test
-    public void testScalingIntervalConfigurationIsRespected() throws Exception {
+    void testScalingIntervalConfigurationIsRespected() throws Exception {
         final JobGraph jobGraph = createJobGraph();
         final DefaultDeclarativeSlotPool declarativeSlotPool =
                 createDeclarativeSlotPool(jobGraph.getJobID());
@@ -2563,8 +2508,9 @@ public class AdaptiveSchedulerTest {
                     .isEqualTo(JobFailureMetricReporter.class.getCanonicalName());
             assertThat(span.getName()).isEqualTo("JobFailure");
             Map<String, Object> attributes = span.getAttributes();
-            assertThat(attributes).containsEntry("failureLabel.failKey", "failValue");
-            assertThat(attributes).containsEntry("canRestart", String.valueOf(canRestart));
+            assertThat(attributes)
+                    .containsEntry("failureLabel.failKey", "failValue")
+                    .containsEntry("canRestart", String.valueOf(canRestart));
         }
     }
 }

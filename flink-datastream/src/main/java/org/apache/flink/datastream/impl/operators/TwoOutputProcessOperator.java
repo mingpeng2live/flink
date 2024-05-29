@@ -18,17 +18,22 @@
 
 package org.apache.flink.datastream.impl.operators;
 
+import org.apache.flink.api.common.TaskInfo;
+import org.apache.flink.datastream.api.context.ProcessingTimeManager;
 import org.apache.flink.datastream.api.context.TwoOutputNonPartitionedContext;
 import org.apache.flink.datastream.api.function.TwoOutputStreamProcessFunction;
 import org.apache.flink.datastream.impl.common.OutputCollector;
 import org.apache.flink.datastream.impl.common.TimestampCollector;
+import org.apache.flink.datastream.impl.context.DefaultPartitionedContext;
 import org.apache.flink.datastream.impl.context.DefaultRuntimeContext;
 import org.apache.flink.datastream.impl.context.DefaultTwoOutputNonPartitionedContext;
+import org.apache.flink.datastream.impl.context.UnsupportedProcessingTimeManager;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
+import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.OutputTag;
 
@@ -47,6 +52,8 @@ public class TwoOutputProcessOperator<IN, OUT_MAIN, OUT_SIDE>
 
     protected transient DefaultRuntimeContext context;
 
+    protected transient DefaultPartitionedContext partitionedContext;
+
     protected transient TwoOutputNonPartitionedContext<OUT_MAIN, OUT_SIDE> nonPartitionedContext;
 
     protected OutputTag<OUT_SIDE> outputTag;
@@ -64,15 +71,28 @@ public class TwoOutputProcessOperator<IN, OUT_MAIN, OUT_SIDE>
     public void open() throws Exception {
         this.mainCollector = getMainCollector();
         this.sideCollector = getSideCollector();
-        this.context = new DefaultRuntimeContext();
-        this.nonPartitionedContext = new DefaultTwoOutputNonPartitionedContext<>();
+        StreamingRuntimeContext operatorContext = getRuntimeContext();
+        TaskInfo taskInfo = operatorContext.getTaskInfo();
+        this.context =
+                new DefaultRuntimeContext(
+                        operatorContext.getJobInfo().getJobName(),
+                        operatorContext.getJobType(),
+                        taskInfo.getNumberOfParallelSubtasks(),
+                        taskInfo.getMaxNumberOfParallelSubtasks(),
+                        taskInfo.getTaskName(),
+                        operatorContext.getMetricGroup());
+        this.partitionedContext =
+                new DefaultPartitionedContext(
+                        context, this::currentKey, this::setCurrentKey, getProcessingTimeManager());
+        this.nonPartitionedContext = getNonPartitionedContext();
     }
 
     @Override
     public void processElement(StreamRecord<IN> element) throws Exception {
         mainCollector.setTimestampFromStreamRecord(element);
         sideCollector.setTimestampFromStreamRecord(element);
-        userFunction.processRecord(element.getValue(), mainCollector, sideCollector, context);
+        userFunction.processRecord(
+                element.getValue(), mainCollector, sideCollector, partitionedContext);
     }
 
     @Override
@@ -86,6 +106,19 @@ public class TwoOutputProcessOperator<IN, OUT_MAIN, OUT_SIDE>
 
     public TimestampCollector<OUT_SIDE> getSideCollector() {
         return new SideOutputCollector(output);
+    }
+
+    protected Object currentKey() {
+        throw new UnsupportedOperationException("The key is only defined for keyed operator");
+    }
+
+    protected TwoOutputNonPartitionedContext<OUT_MAIN, OUT_SIDE> getNonPartitionedContext() {
+        return new DefaultTwoOutputNonPartitionedContext<>(
+                context, partitionedContext, mainCollector, sideCollector, false, null);
+    }
+
+    protected ProcessingTimeManager getProcessingTimeManager() {
+        return UnsupportedProcessingTimeManager.INSTANCE;
     }
 
     /**

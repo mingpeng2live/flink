@@ -42,7 +42,7 @@ public class PhysicalFile {
     @FunctionalInterface
     public interface PhysicalFileDeleter {
         /** Delete the file. */
-        void perform(Path filePath) throws IOException;
+        void perform(Path filePath, long size) throws IOException;
     }
 
     /** Functional interface to create the physical file. */
@@ -88,11 +88,26 @@ public class PhysicalFile {
      */
     private boolean deleted = false;
 
+    /**
+     * If a physical file is owned by current {@link FileMergingSnapshotManager}, the current {@link
+     * FileMergingSnapshotManager} should not delete or count it if not owned.
+     */
+    private boolean isOwned;
+
     public PhysicalFile(
             @Nullable FSDataOutputStream outputStream,
             Path filePath,
             @Nullable PhysicalFileDeleter deleter,
             CheckpointedStateScope scope) {
+        this(outputStream, filePath, deleter, scope, true);
+    }
+
+    public PhysicalFile(
+            @Nullable FSDataOutputStream outputStream,
+            Path filePath,
+            @Nullable PhysicalFileDeleter deleter,
+            CheckpointedStateScope scope,
+            boolean owned) {
         this.filePath = filePath;
         this.outputStream = outputStream;
         this.closed = outputStream == null;
@@ -100,6 +115,7 @@ public class PhysicalFile {
         this.scope = scope;
         this.size = new AtomicLong(0);
         this.logicalFileRefCount = new AtomicInteger(0);
+        this.isOwned = owned;
     }
 
     @Nullable
@@ -141,8 +157,12 @@ public class PhysicalFile {
                         LOG.warn("Fail to close output stream when deleting file: {}", filePath);
                     }
                 }
-                if (deleter != null) {
-                    deleter.perform(filePath);
+                if (deleter != null && isOwned) {
+                    deleter.perform(filePath, size.get());
+                } else {
+                    LOG.debug(
+                            "Skip deleting this file {} because it is not owned by FileMergingManager.",
+                            filePath);
                 }
                 this.deleted = true;
             }
@@ -173,10 +193,15 @@ public class PhysicalFile {
      * @throws IOException if anything goes wrong with file system.
      */
     private void innerClose() throws IOException {
-        closed = true;
-        if (outputStream != null) {
-            outputStream.close();
-            outputStream = null;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (outputStream != null) {
+                outputStream.close();
+                outputStream = null;
+            }
         }
     }
 
@@ -197,6 +222,10 @@ public class PhysicalFile {
         return scope;
     }
 
+    public boolean isOwned() {
+        return isOwned;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -207,13 +236,13 @@ public class PhysicalFile {
         }
 
         PhysicalFile that = (PhysicalFile) o;
-        return filePath.equals(that.filePath);
+        return isOwned == that.isOwned && filePath.equals(that.filePath);
     }
 
     @Override
     public String toString() {
         return String.format(
-                "Physical File: [%s], closed: %s, logicalFileRefCount: %d",
-                filePath, closed, logicalFileRefCount.get());
+                "Physical File: [%s], owned: %s, closed: %s, logicalFileRefCount: %d",
+                filePath, isOwned, closed, logicalFileRefCount.get());
     }
 }

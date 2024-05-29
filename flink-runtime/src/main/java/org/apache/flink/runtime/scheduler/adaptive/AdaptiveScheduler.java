@@ -226,7 +226,7 @@ public class AdaptiveScheduler
                     configuration
                             .getOptional(JobManagerOptions.RESOURCE_STABILIZATION_TIMEOUT)
                             .orElse(stabilizationTimeoutDefault),
-                    Duration.ofMillis(configuration.get(JobManagerOptions.SLOT_IDLE_TIMEOUT)),
+                    configuration.get(JobManagerOptions.SLOT_IDLE_TIMEOUT),
                     scalingIntervalMin,
                     scalingIntervalMax);
         }
@@ -999,6 +999,7 @@ public class AdaptiveScheduler
                 jobInformation.getJobID(),
                 jobInformation.getName(),
                 jobStatus,
+                jobGraph.getJobType(),
                 cause,
                 jobInformation.getCheckpointingSettings(),
                 initializationTimestamp,
@@ -1209,7 +1210,6 @@ public class AdaptiveScheduler
                 executionGraphWithVertexParallelism.getExecutionGraph();
 
         executionGraph.start(componentMainThreadExecutor);
-        executionGraph.transitionToRunning();
 
         executionGraph.setInternalTaskFailuresListener(
                 new UpdateSchedulerNgOnInternalFailuresListener(this));

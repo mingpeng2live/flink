@@ -402,11 +402,13 @@ See the [History Server Docs]({{< ref "docs/deployment/advanced/historyserver" >
 ----
 ----
 
-# Artifact Fetching
+# User Artifact Management
 
-Flink can fetch user artifacts stored locally, on remote DFS, or accessible via an HTTP(S) endpoint.
+Flink is capable to upload and fetch local user artifacts in Application Mode. An artifact can be the actual job archive, a UDF that is packaged separately, etc.
+1. Uploading local artifacts to a DFS is a Kubernetes specific feature, see the [Kubernetes](#kubernetes) section and look for `kubernetes.artifacts.*` prefixed options.
+2. Fetching remote artifacts on the deployed application cluster is supported from DFS or an HTTP(S) endpoint.
 {{< hint info >}}
-**Note:** This is only supported in Standalone Application Mode and Native Kubernetes Application Mode.
+**Note:** Artifact Fetching is supported in Standalone Application Mode and Native Kubernetes Application Mode.
 {{< /hint >}}
 
 {{< generated/artifact_fetch_configuration >}}
@@ -425,7 +427,7 @@ Flink can fetch user artifacts stored locally, on remote DFS, or accessible via 
 
 ### Checkpointing
 
-{{< generated/execution_checkpointing_configuration >}}
+{{< generated/checkpointing_configuration >}}
 
 ### Recovery
 
@@ -562,7 +564,7 @@ These options are for the network stack that handles the streaming and batch dat
 Flink uses Pekko for RPC between components (JobManager/TaskManager/ResourceManager).
 Flink does not use Pekko for data transport.
 
-{{< generated/akka_configuration >}}
+{{< generated/rpc_configuration >}}
 
 ----
 ----

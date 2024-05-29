@@ -21,6 +21,7 @@ package org.apache.flink.table.catalog;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.CatalogNotExistException;
 import org.apache.flink.table.api.EnvironmentSettings;
@@ -136,6 +137,10 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
     @VisibleForTesting
     public List<CatalogModificationListener> getCatalogModificationListeners() {
         return catalogModificationListeners;
+    }
+
+    public Optional<CatalogDescriptor> getCatalogDescriptor(String catalogName) {
+        return catalogStoreHolder.catalogStore().getCatalog(catalogName);
     }
 
     public static Builder newBuilder() {
@@ -317,6 +322,41 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
         catalogStoreHolder.catalogStore().storeCatalog(catalogName, catalogDescriptor);
     }
 
+    /**
+     * Alters a catalog under the given name. The catalog name must be unique.
+     *
+     * @param catalogName the given catalog name under which to alter the given catalog
+     * @param catalogDescriptor catalog descriptor for altering catalog
+     * @throws CatalogException If the catalog neither exists in the catalog store nor in the
+     *     initialized catalogs, or if an error occurs while creating the catalog or storing the
+     *     {@link CatalogDescriptor}
+     */
+    public void alterCatalog(String catalogName, CatalogDescriptor catalogDescriptor)
+            throws CatalogException {
+        checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(catalogName),
+                "Catalog name cannot be null or empty.");
+        checkNotNull(catalogDescriptor, "Catalog descriptor cannot be null");
+        CatalogStore catalogStore = catalogStoreHolder.catalogStore();
+        Optional<CatalogDescriptor> oldCatalogDescriptor = getCatalogDescriptor(catalogName);
+        if (catalogStore.contains(catalogName) && oldCatalogDescriptor.isPresent()) {
+            Configuration conf = oldCatalogDescriptor.get().getConfiguration();
+            conf.addAll(catalogDescriptor.getConfiguration());
+            CatalogDescriptor newCatalogDescriptor = CatalogDescriptor.of(catalogName, conf);
+            Catalog newCatalog = initCatalog(catalogName, newCatalogDescriptor);
+            catalogStore.removeCatalog(catalogName, false);
+            if (catalogs.containsKey(catalogName)) {
+                catalogs.get(catalogName).close();
+            }
+            newCatalog.open();
+            catalogs.put(catalogName, newCatalog);
+            catalogStoreHolder.catalogStore().storeCatalog(catalogName, newCatalogDescriptor);
+        } else {
+            throw new CatalogException(
+                    format("Catalog %s not exists in the catalog store.", catalogName));
+        }
+    }
+
     private Catalog initCatalog(String catalogName, CatalogDescriptor catalogDescriptor) {
         return FactoryUtil.createCatalog(
                 catalogName,
@@ -402,8 +442,7 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
         }
 
         // Get catalog from the CatalogStore.
-        Optional<CatalogDescriptor> optionalDescriptor =
-                catalogStoreHolder.catalogStore().getCatalog(catalogName);
+        Optional<CatalogDescriptor> optionalDescriptor = getCatalogDescriptor(catalogName);
         return optionalDescriptor.map(
                 descriptor -> {
                     Catalog catalog = initCatalog(catalogName, descriptor);
@@ -960,7 +999,8 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
                                     ignoreIfExists);
 
                     catalog.createTable(path, resolvedListenedTable, ignoreIfExists);
-                    if (resolvedListenedTable instanceof CatalogTable) {
+                    if (resolvedListenedTable instanceof CatalogTable
+                            || resolvedListenedTable instanceof CatalogMaterializedTable) {
                         catalogModificationListeners.forEach(
                                 listener ->
                                         listener.onEvent(
@@ -1147,7 +1187,8 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
                 (catalog, path) -> {
                     final CatalogBaseTable resolvedTable = resolveCatalogBaseTable(table);
                     catalog.alterTable(path, resolvedTable, ignoreIfNotExists);
-                    if (resolvedTable instanceof CatalogTable) {
+                    if (resolvedTable instanceof CatalogTable
+                            || resolvedTable instanceof CatalogMaterializedTable) {
                         catalogModificationListeners.forEach(
                                 listener ->
                                         listener.onEvent(
@@ -1227,7 +1268,9 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
             ObjectIdentifier objectIdentifier, boolean ignoreIfNotExists, boolean isDropTable) {
         Predicate<CatalogBaseTable> filter =
                 isDropTable
-                        ? table -> table instanceof CatalogTable
+                        ? table ->
+                                table instanceof CatalogTable
+                                        || table instanceof CatalogMaterializedTable
                         : table -> table instanceof CatalogView;
         // Same name temporary table or view exists.
         if (filter.test(temporaryTables.get(objectIdentifier))) {
@@ -1315,6 +1358,8 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
         Preconditions.checkNotNull(schemaResolver, "Schema resolver is not initialized.");
         if (baseTable instanceof CatalogTable) {
             return resolveCatalogTable((CatalogTable) baseTable);
+        } else if (baseTable instanceof CatalogMaterializedTable) {
+            return resolveCatalogMaterializedTable((CatalogMaterializedTable) baseTable);
         } else if (baseTable instanceof CatalogView) {
             return resolveCatalogView((CatalogView) baseTable);
         }
@@ -1384,6 +1429,42 @@ public final class CatalogManager implements CatalogRegistry, AutoCloseable {
                         });
 
         return new ResolvedCatalogTable(table, resolvedSchema);
+    }
+
+    /**
+     * Resolves a {@link CatalogMaterializedTable} to a validated {@link
+     * ResolvedCatalogMaterializedTable}.
+     */
+    public ResolvedCatalogMaterializedTable resolveCatalogMaterializedTable(
+            CatalogMaterializedTable table) {
+        Preconditions.checkNotNull(schemaResolver, "Schema resolver is not initialized.");
+
+        if (table instanceof ResolvedCatalogMaterializedTable) {
+            return (ResolvedCatalogMaterializedTable) table;
+        }
+
+        final ResolvedSchema resolvedSchema = table.getUnresolvedSchema().resolve(schemaResolver);
+
+        // Validate partition keys are included in physical columns
+        final List<String> physicalColumns =
+                resolvedSchema.getColumns().stream()
+                        .filter(Column::isPhysical)
+                        .map(Column::getName)
+                        .collect(Collectors.toList());
+        table.getPartitionKeys()
+                .forEach(
+                        partitionKey -> {
+                            if (!physicalColumns.contains(partitionKey)) {
+                                throw new ValidationException(
+                                        String.format(
+                                                "Invalid partition key '%s'. A partition key must "
+                                                        + "reference a physical column in the schema. "
+                                                        + "Available columns are: %s",
+                                                partitionKey, physicalColumns));
+                            }
+                        });
+
+        return new ResolvedCatalogMaterializedTable(table, resolvedSchema);
     }
 
     /** Resolves a {@link CatalogView} to a validated {@link ResolvedCatalogView}. */

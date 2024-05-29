@@ -43,6 +43,7 @@ import org.apache.flink.runtime.io.network.partition.DataSetMetaInfo;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmaster.JobResult;
@@ -141,6 +142,7 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -197,7 +199,7 @@ class RestClusterClientTest {
         final Configuration config = new Configuration();
         config.set(JobManagerOptions.ADDRESS, "localhost");
         config.set(RestOptions.RETRY_MAX_ATTEMPTS, 10);
-        config.set(RestOptions.RETRY_DELAY, 0L);
+        config.set(RestOptions.RETRY_DELAY, Duration.ofMillis(0L));
         config.set(RestOptions.PORT, 0);
 
         restConfig = config;
@@ -851,7 +853,7 @@ class RestClusterClientTest {
 
         final Configuration clientConfig = new Configuration(restConfig);
         clientConfig.set(RestOptions.RETRY_MAX_ATTEMPTS, maxRetryAttempts);
-        clientConfig.set(RestOptions.RETRY_DELAY, 10L);
+        clientConfig.set(RestOptions.RETRY_DELAY, Duration.ofMillis(10L));
         try (TestRestServerEndpoint restServerEndpoint =
                 createRestServerEndpoint(new TestJobSubmitHandler())) {
             final InetSocketAddress serverAddress =
@@ -1268,6 +1270,7 @@ class RestClusterClientTest {
                         "foobar",
                         false,
                         JobStatus.RUNNING,
+                        JobType.STREAMING,
                         1,
                         2,
                         1,
