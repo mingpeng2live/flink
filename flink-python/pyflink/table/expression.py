@@ -1273,6 +1273,23 @@ class Expression(Generic[T]):
         else:
             return _ternary_op("locate")(self, s, pos)
 
+    def url_decode(self) -> 'Expression[str]':
+        """
+        Decodes a given string in 'application/x-www-form-urlencoded' format using the UTF-8
+        encoding scheme. If the input is null, or there is an issue with the decoding process
+        (such as encountering an illegal escape pattern), or the encoding scheme is not supported,
+        the function returns null.
+        """
+        return _unary_op("urlDecode")(self)
+
+    def url_encode(self) -> 'Expression[str]':
+        """
+        Translates a string into 'application/x-www-form-urlencoded' format using the UTF-8
+        encoding scheme. If the input is null, or there is an issue with the encoding process, or
+        the encoding scheme is not supported, will return null.
+        """
+        return _unary_op("urlEncode")(self)
+
     def parse_url(self, part_to_extract: Union[str, 'Expression[str]'],
                   key: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
         """
@@ -1614,9 +1631,19 @@ class Expression(Generic[T]):
         Returns an ARRAY that contains the elements from array1 that are not in array2.
         If no elements remain after excluding the elements in array2 from array1,
         the function returns an empty ARRAY. If one or both arguments are NULL,
-        the function returns NULL. The order of the elements from array1 is kept.
+        the function returns NULL. The order of the elements from array1 is kept
+        however the duplicates are removed.
         """
         return _binary_op("arrayExcept")(self, array)
+
+    def array_intersect(self, array) -> 'Expression':
+        """
+        Returns an ARRAY that contains the elements from array1 that are also in array2,
+        without duplicates. If no elements are both in array1 and array2, the function
+        returns an empty ARRAY. If one or both arguments are NULL, the function returns NULL.
+        The order of the elements from array1 is kept.
+        """
+        return _binary_op("arrayIntersect")(self, array)
 
     def split(self, delimiter) -> 'Expression':
         """

@@ -45,7 +45,7 @@ import org.apache.flink.util.TernaryBoolean;
 import org.apache.flink.util.ThrowableCatchingRunnable;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
-import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava32.com.google.common.collect.Iterables;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -663,14 +663,14 @@ public class SourceCoordinatorContext<SplitT extends SourceSplit>
                 assignmentTracker.uncheckpointedAssignments().get(subtaskIndex);
 
         if (cachedSplits != null) {
-            if (supportsConcurrentExecutionAttempts) {
-                assignSplitsToAttempt(subtaskIndex, attemptNumber, new ArrayList<>(cachedSplits));
-                if (hasNoMoreSplits(subtaskIndex)) {
-                    signalNoMoreSplitsToAttempt(subtaskIndex, attemptNumber);
-                }
-            } else {
+            if (!supportsConcurrentExecutionAttempts) {
                 throw new IllegalStateException("No cached split is expected.");
             }
+            assignSplitsToAttempt(subtaskIndex, attemptNumber, new ArrayList<>(cachedSplits));
+        }
+
+        if (supportsConcurrentExecutionAttempts && hasNoMoreSplits(subtaskIndex)) {
+            signalNoMoreSplitsToAttempt(subtaskIndex, attemptNumber);
         }
     }
 

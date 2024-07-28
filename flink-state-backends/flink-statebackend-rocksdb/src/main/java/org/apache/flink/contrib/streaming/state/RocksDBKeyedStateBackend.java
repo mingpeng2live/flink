@@ -31,8 +31,10 @@ import org.apache.flink.contrib.streaming.state.iterator.RocksStateKeysAndNamesp
 import org.apache.flink.contrib.streaming.state.iterator.RocksStateKeysIterator;
 import org.apache.flink.contrib.streaming.state.snapshot.RocksDBFullSnapshotResources;
 import org.apache.flink.contrib.streaming.state.snapshot.RocksDBSnapshotStrategyBase;
+import org.apache.flink.contrib.streaming.state.sstmerge.RocksDBManualCompactionManager;
 import org.apache.flink.contrib.streaming.state.ttl.RocksDbTtlCompactFiltersManager;
 import org.apache.flink.core.fs.CloseableRegistry;
+import org.apache.flink.core.fs.ICloseableRegistry;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
@@ -160,6 +162,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
                                     StateDescriptor.Type.REDUCING,
                                     (StateUpdateFactory) RocksDBReducingState::update))
                     .collect(Collectors.toMap(t -> t.f0, t -> t.f1));
+    private final RocksDBManualCompactionManager sstMergeManager;
 
     private interface StateCreateFactory {
         <K, N, SV, S extends State, IS extends S> IS createState(
@@ -290,7 +293,8 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
             RocksDbTtlCompactFiltersManager ttlCompactFiltersManager,
             InternalKeyContext<K> keyContext,
             @Nonnegative long writeBatchSize,
-            @Nullable CompletableFuture<Void> asyncCompactFuture) {
+            @Nullable CompletableFuture<Void> asyncCompactFuture,
+            RocksDBManualCompactionManager rocksDBManualCompactionManager) {
 
         super(
                 kvStateRegistry,
@@ -338,6 +342,11 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
         } else {
             this.heapPriorityQueuesManager = null;
         }
+        this.sstMergeManager = rocksDBManualCompactionManager;
+        for (RocksDbKvStateInfo stateInfo : kvStateInformation.values()) {
+            this.sstMergeManager.register(stateInfo);
+        }
+        this.sstMergeManager.start();
     }
 
     @SuppressWarnings("unchecked")
@@ -445,6 +454,8 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
             return;
         }
         super.dispose();
+
+        IOUtils.closeQuietly(sstMergeManager);
 
         // This call will block until all clients that still acquire access to the RocksDB instance
         // have released it,
@@ -685,6 +696,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
             newRocksStateInfo =
                     new RocksDbKvStateInfo(oldStateInfo.columnFamilyHandle, newMetaInfo);
             kvStateInformation.put(stateDesc.getName(), newRocksStateInfo);
+            sstMergeManager.register(newRocksStateInfo);
         } else {
             newMetaInfo =
                     new RegisteredKeyValueStateBackendMetaInfo<>(
@@ -705,12 +717,16 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
                             db,
                             columnFamilyOptionsFactory,
                             ttlCompactFiltersManager,
-                            optionsContainer.getWriteBufferManagerCapacity());
+                            optionsContainer.getWriteBufferManagerCapacity(),
+                            // Using ICloseableRegistry.NO_OP here because there is no restore in
+                            // progress; created column families will be closed in dispose()
+                            ICloseableRegistry.NO_OP);
             RocksDBOperationUtils.registerKvStateInformation(
                     this.kvStateInformation,
                     this.nativeMetricMonitor,
                     stateDesc.getName(),
                     newRocksStateInfo);
+            sstMergeManager.register(newRocksStateInfo);
         }
 
         StateSnapshotTransformFactory<SV> wrappedSnapshotTransformFactory =

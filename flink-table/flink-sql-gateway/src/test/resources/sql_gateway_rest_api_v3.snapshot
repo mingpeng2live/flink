@@ -459,7 +459,7 @@
         "cronExpression" : {
           "type" : "string"
         },
-        "dynamicOptions" : {
+        "initConfig" : {
           "type" : "object",
           "additionalProperties" : {
             "type" : "string"
@@ -470,9 +470,6 @@
           "additionalProperties" : {
             "type" : "string"
           }
-        },
-        "customScheduleTime" : {
-          "type" : "string"
         },
         "restEndpointUrl" : {
           "type" : "string"
@@ -531,13 +528,19 @@
     },
     "request" : {
       "type" : "object",
-      "id" : "urn:jsonschema:org:apache:flink:table:gateway:rest:message:materializedtable:scheduler:EmbeddedSchedulerWorkflowRequestBody",
+      "id" : "urn:jsonschema:org:apache:flink:table:gateway:rest:message:materializedtable:scheduler:ResumeEmbeddedSchedulerWorkflowRequestBody",
       "properties" : {
         "workflowName" : {
           "type" : "string"
         },
         "workflowGroup" : {
           "type" : "string"
+        },
+        "dynamicOptions" : {
+          "type" : "object",
+          "additionalProperties" : {
+            "type" : "string"
+          }
         }
       }
     },

@@ -28,6 +28,7 @@ import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsInfo;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.table.catalog.CatalogBaseTable;
+import org.apache.flink.table.catalog.CatalogMaterializedTable;
 import org.apache.flink.table.catalog.ResolvedCatalogBaseTable;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.gateway.api.operation.OperationHandle;
@@ -35,9 +36,11 @@ import org.apache.flink.table.gateway.api.results.TableInfo;
 import org.apache.flink.table.gateway.api.session.SessionEnvironment;
 import org.apache.flink.table.gateway.api.session.SessionHandle;
 import org.apache.flink.table.gateway.api.utils.MockedEndpointVersion;
+import org.apache.flink.table.gateway.rest.util.SqlGatewayRestEndpointExtension;
 import org.apache.flink.table.gateway.service.SqlGatewayServiceImpl;
 import org.apache.flink.table.gateway.service.utils.IgnoreExceptionHandler;
 import org.apache.flink.table.gateway.service.utils.SqlGatewayServiceExtension;
+import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 import org.apache.flink.test.junit5.InjectClusterClient;
 import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.testutils.executor.TestExecutorExtension;
@@ -67,6 +70,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.table.catalog.CommonCatalogOptions.TABLE_CATALOG_STORE_KIND;
+import static org.apache.flink.table.factories.FactoryUtil.WORKFLOW_SCHEDULER_TYPE;
 import static org.apache.flink.table.gateway.service.utils.SqlGatewayServiceTestUtil.awaitOperationTermination;
 import static org.apache.flink.table.gateway.service.utils.SqlGatewayServiceTestUtil.fetchAllResults;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,6 +107,11 @@ public abstract class AbstractMaterializedTableStatementITCase {
                                             "SqlGatewayService Test Pool",
                                             IgnoreExceptionHandler.INSTANCE)));
 
+    @RegisterExtension
+    @Order(4)
+    protected static final SqlGatewayRestEndpointExtension SQL_GATEWAY_REST_ENDPOINT_EXTENSION =
+            new SqlGatewayRestEndpointExtension(SQL_GATEWAY_SERVICE_EXTENSION::getService);
+
     protected static SqlGatewayServiceImpl service;
     private static SessionEnvironment defaultSessionEnvironment;
     private static Path baseCatalogPath;
@@ -129,9 +138,26 @@ public abstract class AbstractMaterializedTableStatementITCase {
         baseCatalogPath = temporaryFolder.resolve(TEST_CATALOG_PREFIX);
         Files.createDirectory(baseCatalogPath);
 
+        // workflow scheduler config
+        Map<String, String> workflowSchedulerConfig = new HashMap<>();
+        workflowSchedulerConfig.put(WORKFLOW_SCHEDULER_TYPE.key(), "embedded");
+        workflowSchedulerConfig.put(
+                "sql-gateway.endpoint.rest.address",
+                SQL_GATEWAY_REST_ENDPOINT_EXTENSION.getTargetAddress());
+        workflowSchedulerConfig.put(
+                "sql-gateway.endpoint.rest.port",
+                String.valueOf(SQL_GATEWAY_REST_ENDPOINT_EXTENSION.getTargetPort()));
+
+        // Session conf for testing purpose
+        Map<String, String> testConf = new HashMap<>();
+        testConf.put("k1", "v1");
+        testConf.put("k2", "v2");
+
         defaultSessionEnvironment =
                 SessionEnvironment.newBuilder()
                         .addSessionConfig(catalogStoreOptions)
+                        .addSessionConfig(workflowSchedulerConfig)
+                        .addSessionConfig(testConf)
                         .setSessionEndpointVersion(MockedEndpointVersion.V1)
                         .build();
     }
@@ -219,13 +245,14 @@ public abstract class AbstractMaterializedTableStatementITCase {
 
     public void createAndVerifyCreateMaterializedTableWithData(
             String materializedTableName,
-            String dataId,
             List<Row> data,
-            Map<String, String> partitionFormatter)
+            Map<String, String> partitionFormatter,
+            CatalogMaterializedTable.RefreshMode refreshMode)
             throws Exception {
         long timeout = Duration.ofSeconds(20).toMillis();
         long pause = Duration.ofSeconds(2).toMillis();
 
+        String dataId = TestValuesTableFactory.registerData(data);
         String sourceDdl =
                 String.format(
                         "CREATE TABLE IF NOT EXISTS my_source (\n"
@@ -262,7 +289,8 @@ public abstract class AbstractMaterializedTableStatementITCase {
                                 + "    %s"
                                 + "   'format' = 'debezium-json'\n"
                                 + " )\n"
-                                + " FRESHNESS = INTERVAL '2' SECOND\n"
+                                + " FRESHNESS = INTERVAL '30' SECOND\n"
+                                + " REFRESH_MODE = %s\n"
                                 + " AS SELECT \n"
                                 + "  user_id,\n"
                                 + "  shop_id,\n"
@@ -272,7 +300,7 @@ public abstract class AbstractMaterializedTableStatementITCase {
                                 + "    SELECT user_id, shop_id, order_created_at AS ds, order_id FROM my_source"
                                 + " ) AS tmp\n"
                                 + " GROUP BY (user_id, shop_id, ds)",
-                        materializedTableName, partitionFields);
+                        materializedTableName, partitionFields, refreshMode.toString());
 
         OperationHandle materializedTableHandle =
                 service.executeStatement(

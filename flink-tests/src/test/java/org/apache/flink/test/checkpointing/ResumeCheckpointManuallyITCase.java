@@ -402,15 +402,30 @@ public class ResumeCheckpointManuallyITCase extends TestLogger {
             MiniClusterWithClientResource cluster,
             RestoreMode restoreMode)
             throws Exception {
-        JobGraph initialJobGraph = getJobGraph(backend, externalCheckpoint, restoreMode);
+        // complete at least two checkpoints so that the initial checkpoint can be subsumed
+        return runJobAndGetExternalizedCheckpoint(
+                backend, externalCheckpoint, cluster, restoreMode, new Configuration(), 2, true);
+    }
+
+    static String runJobAndGetExternalizedCheckpoint(
+            StateBackend backend,
+            @Nullable String externalCheckpoint,
+            MiniClusterWithClientResource cluster,
+            RestoreMode restoreMode,
+            Configuration jobConfig,
+            int consecutiveCheckpoints,
+            boolean retainCheckpoints)
+            throws Exception {
+        JobGraph initialJobGraph =
+                getJobGraph(backend, externalCheckpoint, restoreMode, jobConfig, retainCheckpoints);
         NotifyingInfiniteTupleSource.countDownLatch = new CountDownLatch(PARALLELISM);
         cluster.getClusterClient().submitJob(initialJobGraph).get();
 
         // wait until all sources have been started
         NotifyingInfiniteTupleSource.countDownLatch.await();
 
-        // complete at least two checkpoints so that the initial checkpoint can be subsumed
-        waitForCheckpoint(initialJobGraph.getJobID(), cluster.getMiniCluster(), 2);
+        waitForCheckpoint(
+                initialJobGraph.getJobID(), cluster.getMiniCluster(), consecutiveCheckpoints);
         cluster.getClusterClient().cancel(initialJobGraph.getJobID()).get();
         waitUntilJobCanceled(initialJobGraph.getJobID(), cluster.getClusterClient());
 
@@ -423,15 +438,22 @@ public class ResumeCheckpointManuallyITCase extends TestLogger {
     }
 
     private static JobGraph getJobGraph(
-            StateBackend backend, @Nullable String externalCheckpoint, RestoreMode restoreMode) {
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+            StateBackend backend,
+            @Nullable String externalCheckpoint,
+            RestoreMode restoreMode,
+            Configuration jobConfig,
+            boolean retainCheckpoints) {
+        final StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(jobConfig);
 
         env.enableCheckpointing(500);
         env.setStateBackend(backend);
         env.setParallelism(PARALLELISM);
         env.getCheckpointConfig()
                 .setExternalizedCheckpointRetention(
-                        ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
+                        retainCheckpoints
+                                ? ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION
+                                : ExternalizedCheckpointRetention.DELETE_ON_CANCELLATION);
         env.setRestartStrategy(RestartStrategies.noRestart());
 
         env.addSource(new NotifyingInfiniteTupleSource(10_000))

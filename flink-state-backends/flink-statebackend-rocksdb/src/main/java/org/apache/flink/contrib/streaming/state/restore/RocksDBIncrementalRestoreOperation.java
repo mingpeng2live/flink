@@ -24,6 +24,7 @@ import org.apache.flink.contrib.streaming.state.RocksDBIncrementalCheckpointUtil
 import org.apache.flink.contrib.streaming.state.RocksDBKeyedStateBackend.RocksDbKvStateInfo;
 import org.apache.flink.contrib.streaming.state.RocksDBNativeMetricOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBOperationUtils;
+import org.apache.flink.contrib.streaming.state.RocksDBStateDataTransferHelper;
 import org.apache.flink.contrib.streaming.state.RocksDBStateDownloader;
 import org.apache.flink.contrib.streaming.state.RocksDBWriteBatchWrapper;
 import org.apache.flink.contrib.streaming.state.RocksIteratorWrapper;
@@ -67,6 +68,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -84,6 +86,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
 
+import static org.apache.flink.core.fs.ICloseableRegistry.asCloseable;
 import static org.apache.flink.runtime.metrics.MetricNames.DOWNLOAD_STATE_DURATION;
 import static org.apache.flink.runtime.metrics.MetricNames.RESTORE_ASYNC_COMPACTION_DURATION;
 import static org.apache.flink.runtime.metrics.MetricNames.RESTORE_STATE_DURATION;
@@ -128,6 +131,8 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
 
     private final boolean useDeleteFilesInRange;
 
+    private final ExecutorService ioExecutor;
+
     public RocksDBIncrementalRestoreOperation(
             String operatorIdentifier,
             KeyGroupRange keyGroupRange,
@@ -151,7 +156,8 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
             double overlapFractionThreshold,
             boolean useIngestDbRestoreMode,
             boolean asyncCompactAfterRescale,
-            boolean useDeleteFilesInRange) {
+            boolean useDeleteFilesInRange,
+            ExecutorService ioExecutor) {
         this.rocksHandle =
                 new RocksDBHandle(
                         kvStateInformation,
@@ -182,6 +188,7 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
         this.useIngestDbRestoreMode = false;
         this.asyncCompactAfterRescale = false;
         this.useDeleteFilesInRange = useDeleteFilesInRange;
+        this.ioExecutor = ioExecutor;
     }
 
     /**
@@ -646,8 +653,11 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
                 keyGroupRange,
                 operatorIdentifier);
         rocksHandle.openDB();
-        exportedColumnFamilyMetaData.forEach(
-                rocksHandle::registerStateColumnFamilyHandleWithImport);
+        for (Map.Entry<RegisteredStateMetaInfoBase.Key, List<ExportImportFilesMetaData>> entry :
+                exportedColumnFamilyMetaData.entrySet()) {
+            rocksHandle.registerStateColumnFamilyHandleWithImport(
+                    entry.getKey(), entry.getValue(), cancelStreamRegistryForRestore);
+        }
 
         // Use Range delete to clip the temp db to the target range of the backend
         RocksDBIncrementalCheckpointUtils.clipDBWithKeyGroupRange(
@@ -704,7 +714,8 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
         this.rocksHandle.openDB(
                 createColumnFamilyDescriptors(stateMetaInfoSnapshots, true),
                 stateMetaInfoSnapshots,
-                restoreSourcePath);
+                restoreSourcePath,
+                cancelStreamRegistry);
     }
 
     /**
@@ -721,7 +732,9 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
                 operatorIdentifier,
                 keyGroupRange.prettyPrintInterval());
         try (RocksDBStateDownloader rocksDBStateDownloader =
-                new RocksDBStateDownloader(numberOfTransferringThreads)) {
+                new RocksDBStateDownloader(
+                        RocksDBStateDataTransferHelper.forThreadNumIfSpecified(
+                                numberOfTransferringThreads, ioExecutor))) {
             rocksDBStateDownloader.transferAllStateDataToDirectory(
                     downloadSpecs, cancelStreamRegistry);
             logger.info(
@@ -756,7 +769,10 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
                 operatorIdentifier);
 
         try (RocksDBWriteBatchWrapper writeBatchWrapper =
-                new RocksDBWriteBatchWrapper(this.rocksHandle.getDb(), writeBatchSize)) {
+                        new RocksDBWriteBatchWrapper(this.rocksHandle.getDb(), writeBatchSize);
+                Closeable ignored =
+                        cancelStreamRegistry.registerCloseableTemporarily(
+                                asCloseable(writeBatchWrapper))) {
             for (IncrementalLocalKeyedStateHandle handleToCopy : toImport) {
                 try (RestoredDBInstance restoredDBInstance =
                         restoreTempDBInstanceFromLocalState(handleToCopy)) {
@@ -809,7 +825,9 @@ public class RocksDBIncrementalRestoreOperation<K> implements RocksDBRestoreOper
 
             ColumnFamilyHandle targetColumnFamilyHandle =
                     this.rocksHandle.getOrRegisterStateColumnFamilyHandle(
-                                    null, tmpRestoreDBInfo.stateMetaInfoSnapshots.get(descIdx))
+                                    null,
+                                    tmpRestoreDBInfo.stateMetaInfoSnapshots.get(descIdx),
+                                    cancelStreamRegistry)
                             .columnFamilyHandle;
 
             try (RocksIteratorWrapper iterator =
