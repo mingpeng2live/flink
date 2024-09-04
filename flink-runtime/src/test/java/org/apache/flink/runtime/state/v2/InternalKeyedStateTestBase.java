@@ -128,7 +128,8 @@ public class InternalKeyedStateTestBase {
                 @Nonnull
                 @Override
                 public <N, S extends State, SV> S createState(
-                        TypeSerializer<N> namespaceSerializer,
+                        @Nonnull N defaultNamespace,
+                        @Nonnull TypeSerializer<N> namespaceSerializer,
                         @Nonnull StateDescriptor<SV> stateDesc)
                         throws Exception {
                     return null;
@@ -171,6 +172,14 @@ public class InternalKeyedStateTestBase {
         public CompletableFuture<Void> executeBatchRequests(
                 StateRequestContainer stateRequestContainer) {
             receivedRequest.addAll(((TestStateRequestContainer) stateRequestContainer).requests);
+            for (StateRequest request : receivedRequest) {
+                if (request.getRequestType() == StateRequestType.MAP_CONTAINS
+                        || request.getRequestType() == StateRequestType.MAP_IS_EMPTY) {
+                    request.getFuture().complete(true);
+                } else {
+                    request.getFuture().complete(null);
+                }
+            }
             CompletableFuture<Void> future = new CompletableFuture<>();
             future.complete(null);
             return future;

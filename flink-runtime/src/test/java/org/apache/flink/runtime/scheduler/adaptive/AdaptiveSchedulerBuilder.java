@@ -19,6 +19,7 @@ package org.apache.flink.runtime.scheduler.adaptive;
 
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.blob.VoidBlobWriter;
@@ -97,7 +98,7 @@ public class AdaptiveSchedulerBuilder {
     /**
      * {@code null} indicates that the default factory will be used based on the set configuration.
      */
-    @Nullable private RescaleManager.Factory rescaleManagerFactory = null;
+    @Nullable private StateTransitionManager.Factory stateTransitionManagerFactory = null;
 
     private BiFunction<JobManagerJobMetricGroup, CheckpointStatsListener, CheckpointStatsTracker>
             checkpointStatsTrackerFactory =
@@ -224,9 +225,9 @@ public class AdaptiveSchedulerBuilder {
         return this;
     }
 
-    public AdaptiveSchedulerBuilder setRescaleManagerFactory(
-            @Nullable RescaleManager.Factory rescaleManagerFactory) {
-        this.rescaleManagerFactory = rescaleManagerFactory;
+    public AdaptiveSchedulerBuilder setStateTransitionManagerFactory(
+            @Nullable StateTransitionManager.Factory stateTransitionManagerFactory) {
+        this.stateTransitionManagerFactory = stateTransitionManagerFactory;
         return this;
     }
 
@@ -259,9 +260,9 @@ public class AdaptiveSchedulerBuilder {
                 AdaptiveScheduler.Settings.of(jobMasterConfiguration);
         return new AdaptiveScheduler(
                 settings,
-                rescaleManagerFactory == null
-                        ? DefaultRescaleManager.Factory.fromSettings(settings)
-                        : rescaleManagerFactory,
+                stateTransitionManagerFactory == null
+                        ? DefaultStateTransitionManager.Factory.fromSettings(settings)
+                        : stateTransitionManagerFactory,
                 checkpointStatsTrackerFactory,
                 jobGraph,
                 jobResourceRequirements,
@@ -269,7 +270,8 @@ public class AdaptiveSchedulerBuilder {
                 declarativeSlotPool,
                 slotAllocator == null
                         ? AdaptiveSchedulerFactory.createSlotSharingSlotAllocator(
-                                declarativeSlotPool)
+                                declarativeSlotPool,
+                                jobMasterConfiguration.get(StateRecoveryOptions.LOCAL_RECOVERY))
                         : slotAllocator,
                 executorService,
                 userCodeLoader,

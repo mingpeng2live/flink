@@ -18,6 +18,9 @@
 
 package org.apache.flink.state.forst;
 
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.runtime.state.VoidNamespace;
+
 import org.junit.jupiter.api.Test;
 import org.rocksdb.WriteOptions;
 
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,9 +38,9 @@ public class ForStWriteBatchOperationTest extends ForStDBOperationTestBase {
 
     @Test
     public void testValueStateWriteBatch() throws Exception {
-        ForStValueState<Integer, Void, String> valueState1 =
+        ForStValueState<Integer, VoidNamespace, String> valueState1 =
                 buildForStValueState("test-write-batch-1");
-        ForStValueState<Integer, Void, String> valueState2 =
+        ForStValueState<Integer, VoidNamespace, String> valueState2 =
                 buildForStValueState("test-write-batch-2");
         List<ForStDBPutRequest<?, ?, ?>> batchPutRequest = new ArrayList<>();
         int keyNum = 100;
@@ -64,7 +68,7 @@ public class ForStWriteBatchOperationTest extends ForStDBOperationTestBase {
 
     @Test
     public void testWriteBatchWithNullValue() throws Exception {
-        ForStValueState<Integer, Void, String> valueState =
+        ForStValueState<Integer, VoidNamespace, String> valueState =
                 buildForStValueState("test-write-batch");
         List<ForStDBPutRequest<?, ?, ?>> batchPutRequest = new ArrayList<>();
         // 1. write some data without null value
@@ -111,6 +115,87 @@ public class ForStWriteBatchOperationTest extends ForStDBOperationTestBase {
             } else {
                 assertArrayEquals(valueBytes, request.buildSerializedValue());
             }
+        }
+    }
+
+    @Test
+    public void testListStateWriteBatch() throws Exception {
+        ForStListState<Integer, VoidNamespace, String> listState =
+                buildForStListState("test-write-batch-1");
+        List<ForStDBPutRequest<?, ?, ?>> batchPutRequest = new ArrayList<>();
+        ArrayList<Tuple2<ForStDBPutRequest<?, ?, ?>, List<String>>> resultCheckList =
+                new ArrayList<>();
+
+        // update
+        int keyNum = 100;
+        for (int i = 0; i < keyNum; i++) {
+            List<String> value = new ArrayList<>();
+            value.add(String.valueOf(i));
+            value.add(String.valueOf(i + 1));
+
+            ForStDBPutRequest<Integer, VoidNamespace, List<String>> request =
+                    ForStDBPutRequest.of(
+                            buildContextKey(i), value, listState, new TestStateFuture<>());
+
+            resultCheckList.add(Tuple2.of(request, value));
+            batchPutRequest.add(request);
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ForStWriteBatchOperation writeBatchOperation =
+                new ForStWriteBatchOperation(db, batchPutRequest, new WriteOptions(), executor);
+        writeBatchOperation.process().get();
+
+        // check data correctness
+        for (Tuple2<ForStDBPutRequest<?, ?, ?>, List<String>> tuple : resultCheckList) {
+            byte[] keyBytes = tuple.f0.buildSerializedKey();
+            byte[] valueBytes = db.get(tuple.f0.getColumnFamilyHandle(), keyBytes);
+            assertThat(listState.deserializeValue(valueBytes)).isEqualTo(tuple.f1);
+        }
+
+        // add or addall with update
+        batchPutRequest.clear();
+        resultCheckList.clear();
+        for (int i = 0; i < keyNum / 2; i++) {
+            List<String> value = new ArrayList<>();
+            value.add(String.valueOf(i));
+            value.add(String.valueOf(i + 1));
+
+            List<String> deltaValue = new ArrayList<>();
+            deltaValue.add(String.valueOf(i * 2));
+            deltaValue.add(String.valueOf(i * 3));
+
+            value.addAll(deltaValue);
+
+            ForStDBPutRequest<Integer, VoidNamespace, List<String>> request =
+                    ForStDBPutRequest.ofMerge(
+                            buildContextKey(i), deltaValue, listState, new TestStateFuture<>());
+
+            resultCheckList.add(Tuple2.of(request, value));
+            batchPutRequest.add(request);
+        }
+        for (int i = keyNum / 2; i < keyNum; i++) {
+            List<String> value = new ArrayList<>();
+            value.add(String.valueOf(i));
+            value.add(String.valueOf(i + 1));
+
+            ForStDBPutRequest<Integer, VoidNamespace, List<String>> request =
+                    ForStDBPutRequest.of(
+                            buildContextKey(i), value, listState, new TestStateFuture<>());
+
+            resultCheckList.add(Tuple2.of(request, value));
+            batchPutRequest.add(request);
+        }
+
+        writeBatchOperation =
+                new ForStWriteBatchOperation(db, batchPutRequest, new WriteOptions(), executor);
+        writeBatchOperation.process().get();
+
+        // check data correctness
+        for (Tuple2<ForStDBPutRequest<?, ?, ?>, List<String>> tuple : resultCheckList) {
+            byte[] keyBytes = tuple.f0.buildSerializedKey();
+            byte[] valueBytes = db.get(tuple.f0.getColumnFamilyHandle(), keyBytes);
+            assertThat(listState.deserializeValue(valueBytes)).isEqualTo(tuple.f1);
         }
     }
 }

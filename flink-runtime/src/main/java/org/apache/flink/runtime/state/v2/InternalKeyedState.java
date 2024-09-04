@@ -64,6 +64,10 @@ public abstract class InternalKeyedState<K, N, V> implements InternalPartitioned
         return stateRequestHandler.handleRequest(this, stateRequestType, payload);
     }
 
+    protected final <IN, OUT> OUT handleRequestSync(StateRequestType stateRequestType, IN payload) {
+        return stateRequestHandler.handleRequestSync(this, stateRequestType, payload);
+    }
+
     @Override
     public void setCurrentNamespace(N namespace) {
         stateRequestHandler.setCurrentNamespaceForState(this, namespace);
@@ -74,6 +78,10 @@ public abstract class InternalKeyedState<K, N, V> implements InternalPartitioned
         return handleRequest(StateRequestType.CLEAR, null);
     }
 
+    public final void clear() {
+        handleRequestSync(StateRequestType.CLEAR, null);
+    }
+
     /** Return specific {@code StateDescriptor}. */
     public StateDescriptor<V> getStateDescriptor() {
         return stateDescriptor;
@@ -82,5 +90,9 @@ public abstract class InternalKeyedState<K, N, V> implements InternalPartitioned
     /** Return related value serializer. */
     public TypeSerializer<V> getValueSerializer() {
         return stateDescriptor.getSerializer();
+    }
+
+    public StateRequestHandler getStateRequestHandler() {
+        return stateRequestHandler;
     }
 }
